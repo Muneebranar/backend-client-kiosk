@@ -3,11 +3,12 @@ const Schema = mongoose.Schema;
 
 const InboundEventSchema = new Schema({
   checkinId: { type: Schema.Types.ObjectId, ref: 'Checkin' },
+  businessId: { type: Schema.Types.ObjectId, ref: "Business" }, // ✅ add this
+
   fromNumber: String,
   body: String,
   eventType: String,
   raw: Schema.Types.Mixed,
-  createdAt: { type: Date, default: Date.now }
-});
+}, { timestamps: true });
 
 module.exports = mongoose.model('InboundEvent', InboundEventSchema);
