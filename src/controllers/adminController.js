@@ -271,7 +271,7 @@ exports.deleteBusiness = async (req, res) => {
     // ✅ Delete related data
     await Promise.all([
       Reward.deleteMany({ businessId: id }),
-      // Customer.deleteMany({ businessId: id }),
+      //Customer.deleteMany({ businessId: id }),
       Checkin.deleteMany({ businessId: id }),
       PointsLedger.deleteMany({ businessId: id }),
       InboundEvent.deleteMany({ businessId: id }),
@@ -405,24 +405,25 @@ exports.getInboundEvents = async (req, res) => {
 /* ---------------------------------------------------
    11. HANDLE INBOUND TWILIO WEBHOOK
 --------------------------------------------------- */
-
 exports.handleInboundTwilio = async (req, res) => {
   try {
     const { From, To, Body } = req.body;
 
-    // 🔹 Normalize numbers (Twilio sends with + sign)
+    // 🔹 Normalize numbers
     const fromNumber = From ? From.replace("+", "") : null;
     const toNumber = To?.replace("+", "") || "Unknown";
 
-    // 🔹 Try to find latest check-in by same phone number
-   const checkin = await Checkin.findOne({
-  phone: fromNumber ? `+${fromNumber}` : null,
-}).sort({ createdAt: -1 });
-//.lean();
+    // 🔹 Find latest check-in for this phone
+    const checkin = await Checkin.findOne({
+      phone: fromNumber ? `+${fromNumber}` : null,
+    })
+      .sort({ createdAt: -1 })
+      .populate("businessId"); // ✅ fetch business info
 
-    // 🔹 Save the inbound message
+    // 🔹 Save inbound message with both IDs
     const inbound = await InboundEvent.create({
       checkinId: checkin?._id || null,
+      businessId: checkin?.businessId?._id || null, // ✅ ADD THIS LINE
       fromNumber,
       body: Body,
       eventType: "INBOUND_SMS",
@@ -431,13 +432,12 @@ exports.handleInboundTwilio = async (req, res) => {
 
     console.log("✅ Inbound event saved:", inbound._id);
 
-    res.status(200).send("<Response></Response>"); // Twilio expects XML-style response
+    res.status(200).send("<Response></Response>");
   } catch (err) {
     console.error("❌ Failed to handle inbound Twilio event:", err);
     res.status(500).json({ ok: false, error: "Server error" });
   }
 };
-
 
 
 //Rewards

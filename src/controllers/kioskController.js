@@ -371,56 +371,72 @@ exports.checkin = async (req, res) => {
         error: "SMS service not configured" 
       });
     }
+// ========== CHECK LAST CHECKIN FOR COOLDOWN ==========
+let lastCheckin = await Checkin.findOne({
+  phone: normalizedPhone,
+  businessId: business._id,
+}).sort({ createdAt: -1 });
 
-    // ========== CHECK LAST CHECKIN FOR COOLDOWN ==========
-    let lastCheckin = await Checkin.findOne({
-      phone: normalizedPhone,
-      businessId: business._id,
-    }).sort({ createdAt: -1 });
+// ✅ Set cooldown to 24 hours (in minutes)
+const cooldownMinutes = 24 * 60;
 
-    const cooldownMinutes = 0.1;
-    const isInCooldown = lastCheckin 
-      ? (Date.now() - new Date(lastCheckin.lastCheckinAt)) / (1000 * 60) < cooldownMinutes
-      : false;
-    
-    const remaining = isInCooldown 
-      ? Math.ceil(cooldownMinutes - (Date.now() - new Date(lastCheckin.lastCheckinAt)) / (1000 * 60))
-      : 0;
+const isInCooldown = lastCheckin 
+  ? (Date.now() - new Date(lastCheckin.lastCheckinAt)) / (1000 * 60) < cooldownMinutes
+  : false;
 
-    const isFirstCheckin = !lastCheckin;
+// ✅ Calculate remaining cooldown time
+const diffMinutes = lastCheckin
+  ? (Date.now() - new Date(lastCheckin.lastCheckinAt)) / (1000 * 60)
+  : 0;
 
-    // ========== ALWAYS CREATE NEW CHECKIN LOG ==========
-    let newCheckin;
-    try {
-      newCheckin = await Checkin.create({
-        businessId: business._id,
-        phone: normalizedPhone,
-        pointsAwarded: isInCooldown ? 0 : 1,
-        totalCheckins: (lastCheckin?.totalCheckins || 0) + 1,
-        consentGiven: true,
-        sentCompliance: isFirstCheckin ? false : lastCheckin?.sentCompliance || false,
-        lastCheckinAt: new Date(),
-      });
+const remaining = isInCooldown
+  ? Math.ceil(cooldownMinutes - diffMinutes)
+  : 0;
 
-      console.log("💾 New checkin log created:", newCheckin._id);
-    } catch (err) {
-      console.error("❌ Failed to create checkin log:", err);
-      return res.status(500).json({ 
-        ok: false, 
-        error: "Failed to log checkin" 
-      });
-    }
+// ✅ Make message human-friendly
+let cooldownMsg = "";
+if (remaining >= 60) {
+  const hours = Math.floor(remaining / 60);
+  const mins = remaining % 60;
+  cooldownMsg = `You can check in again after ${hours} hour(s)${mins ? ` and ${mins} minute(s)` : ""}.`;
+} else {
+  cooldownMsg = `You can check in again after ${remaining} minute(s).`;
+}
 
-    // ========== IF IN COOLDOWN, RETURN EARLY ==========
-    if (isInCooldown) {
-      console.log(`⏳ Cooldown active: ${remaining} minutes remaining`);
-      return res.status(429).json({
-        ok: false,
-        message: `You can check in again after ${remaining} minute(s).`,
-        cooldownRemaining: remaining,
-        checkinLogged: true,
-      });
-    }
+const isFirstCheckin = !lastCheckin;
+
+// ========== ALWAYS CREATE NEW CHECKIN LOG ==========
+let newCheckin;
+try {
+  newCheckin = await Checkin.create({
+    businessId: business._id,
+    phone: normalizedPhone,
+    pointsAwarded: isInCooldown ? 0 : 1,
+    totalCheckins: (lastCheckin?.totalCheckins || 0) + 1,
+    consentGiven: true,
+    sentCompliance: isFirstCheckin ? false : lastCheckin?.sentCompliance || false,
+    lastCheckinAt: new Date(),
+  });
+
+  console.log("💾 New checkin log created:", newCheckin._id);
+} catch (err) {
+  console.error("❌ Failed to create checkin log:", err);
+  return res.status(500).json({
+    ok: false,
+    error: "Failed to log checkin",
+  });
+}
+
+// ========== IF IN COOLDOWN, RETURN EARLY ==========
+if (isInCooldown) {
+  console.log(`⏳ Cooldown active: ${remaining} minutes remaining`);
+  return res.status(429).json({
+    ok: false,
+    message: cooldownMsg,
+    cooldownRemaining: remaining,
+    checkinLogged: true,
+  });
+}
 
     // ========== UPDATE POINTS LEDGER ==========
     let ledger;
@@ -544,6 +560,35 @@ exports.checkin = async (req, res) => {
       console.error("❌ Reward processing error:", err.message);
       // Don't fail the checkin if reward fails
     }
+    // ========== CHECK PROGRESS TOWARD NEXT REWARD ==========
+
+// ✅ Use check-in count instead of points
+const totalCheckins = ledger.totalCheckins;
+
+// ✅ Find the next reward template (based on threshold)
+const nextReward = rewardTemplates.find(r => r.threshold > totalCheckins);
+
+let progressMessage = "";
+
+if (nextReward) {
+  const remaining = nextReward.threshold - totalCheckins;
+  progressMessage = `Only ${remaining} more check-in${remaining > 1 ? "s" : ""} until you earn your reward of ${nextReward.name}!`;
+} else {
+  progressMessage = "🎉 You’ve reached all available rewards!";
+}
+
+// (Optional) Send progress message by SMS
+try {
+  await client.messages.create({
+    to: normalizedPhone,
+    from: fromNumber,
+    body: progressMessage,
+  });
+  console.log("💬 Progress SMS sent:", progressMessage);
+} catch (err) {
+  console.error("⚠️ Failed to send progress SMS:", err.message);
+}
+
 
     // ========== SUCCESS RESPONSE ==========
     console.log("✅ Check-in complete.");
@@ -554,6 +599,7 @@ exports.checkin = async (req, res) => {
       totalPoints: ledger.points,
       totalCheckins: ledger.totalCheckins,
       newReward: earnedReward,
+       message: progressMessage, // ✅ added
     });
 
   } catch (err) {

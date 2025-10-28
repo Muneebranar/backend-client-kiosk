@@ -12,7 +12,7 @@ const CheckinSchema = new Schema(
 
     totalCheckins: { type: Number, default: 1 }, // ✅ how many times user checked in
     lastCheckinAt: { type: Date, default: Date.now }, // ✅ timestamp of most recent check-in
-
+    // inbound:{ type: Schema.Types.ObjectId, ref: "InboundEvent", required: true },
     unsubscribed: { type: Boolean, default: false },
   },
   { timestamps: true }
