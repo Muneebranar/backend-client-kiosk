@@ -15,7 +15,9 @@ const rewardSchema = new mongoose.Schema(
     redeemed: { type: Boolean, default: false },
     redeemedAt: { type: Date },
     expiresAt: { type: Date },
-      expiryDays: { type: Number }, // ✅ newly added
+    expiryDays: { type: Number },
+    priority: { type: Number, default: 1 },
+    isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

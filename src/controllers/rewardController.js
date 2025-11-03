@@ -6,8 +6,8 @@ exports.getBusinessRewards = async (req, res) => {
   try {
     const { id } = req.params;
     const list = await Reward.find({ businessId: id })
-      .sort({ createdAt: -1 })
-      .populate("businessId", "name slug"); // optional for clarity
+      .sort({ priority: 1, createdAt: -1 })
+      .populate("businessId", "name slug");
     res.json({ ok: true, list });
   } catch (err) {
     console.error("❌ Error fetching business rewards:", err);
@@ -18,15 +18,24 @@ exports.getBusinessRewards = async (req, res) => {
 // ✅ ADD NEW REWARD TO BUSINESS
 exports.addBusinessReward = async (req, res) => {
   try {
-    const { id } = req.params; // businessId
-    const { name, threshold, expirationDays } = req.body;
+    const { id } = req.params;
+    const { 
+      name, 
+      threshold, 
+      expirationDays, 
+      priority = 1,
+      discountType = 'none',
+      discountValue = 0 
+    } = req.body;
 
     const business = await Business.findById(id);
     if (!business)
       return res.status(404).json({ ok: false, error: "Business not found" });
 
-    // ✅ Limit 15 active rewards per business
-    const rewardCount = await Reward.countDocuments({ businessId: id });
+    const rewardCount = await Reward.countDocuments({ 
+      businessId: id, 
+      phone: { $exists: false } 
+    });
     if (rewardCount >= 15) {
       return res.status(400).json({
         ok: false,
@@ -48,17 +57,67 @@ exports.addBusinessReward = async (req, res) => {
       threshold,
       description: `Reward for ${business.name}`,
       code: `RW-${Math.random().toString(36).substring(2, 10).toUpperCase()}`,
-      expiryDays, // ✅ new field
-      expiresAt,  // ✅ consistent auto-calc date
+      expiryDays,
+      expiresAt,
+      priority,
+      isActive: req.body.isActive !== undefined ? req.body.isActive : true,
+      discountType,
+      discountValue,
     });
 
     res.json({ ok: true, reward: newReward });
   } catch (err) {
-    console.error("❌ Error adding reward:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
+    console.error("Error adding reward:", err);
+    res.status(500).json({ error: "Server error" });
   }
 };
 
+// ✅ UPDATE BUSINESS REWARD
+exports.updateBusinessReward = async (req, res) => {
+  try {
+    const { rewardId } = req.params;
+    const { 
+      name, 
+      threshold, 
+      expirationDays, 
+      description,
+      priority,
+      isActive,
+      discountType,
+      discountValue 
+    } = req.body;
+
+    const reward = await Reward.findById(rewardId);
+    if (!reward)
+      return res.status(404).json({ ok: false, error: "Reward not found" });
+
+    // Update fields
+    if (name) reward.name = name;
+    if (threshold) reward.threshold = threshold;
+    if (description !== undefined) reward.description = description;
+    if (priority !== undefined) reward.priority = priority;
+    if (isActive !== undefined) reward.isActive = isActive;
+    
+    // ✅ Update discount fields
+    if (discountType !== undefined) reward.discountType = discountType;
+    if (discountValue !== undefined) reward.discountValue = discountValue;
+
+    // Handle expiration
+    if (expirationDays !== undefined) {
+      reward.expiryDays = expirationDays;
+      reward.expiresAt = expirationDays
+        ? new Date(Date.now() + expirationDays * 24 * 60 * 60 * 1000)
+        : null;
+    }
+
+    await reward.save();
+
+    res.json({ ok: true, message: "Reward updated successfully", reward });
+  } catch (err) {
+    console.error("❌ Error updating reward:", err);
+    res.status(500).json({ ok: false, error: "Server error" });
+  }
+};
 
 // ✅ DELETE REWARD
 exports.deleteBusinessReward = async (req, res) => {

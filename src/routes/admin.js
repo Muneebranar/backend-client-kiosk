@@ -199,62 +199,111 @@ const express = require("express");
 const router = express.Router();
 const admin = require("../controllers/adminController");
 const rewardController = require("../controllers/rewardController");
-const auth = require("../middleware/auth");
-const upload = require("../config/mutler.js");
-const kioskRouter = require("../controllers/kioskController.js")
+const csvImportController = require("../controllers/csvImportController");
+const kioskController=require("../controllers/kioskController");
+const { protect } = require("../middleware/authMiddleware");
+const {upload,uploadCSV} = require("../config/mutler"); // ✅ import Cloudinary multer
+// const {uploadCSV } = require("../config/multer");
 
 
-// 🧩 Public Admin Routes
-router.post("/login", admin.login);
+// 🧩 Debug Logs — check which functions are actually loaded
+console.log("✅ adminController:", Object.keys(adminController));
+console.log("✅ customerController:", Object.keys(customerController));
+console.log("✅ rewardController:", Object.keys(rewardController));
+console.log("✅ csvImportController:", Object.keys(csvImportController));
+console.log("csvImportController:", csvImportController);
 
-// 🔒 Protected Routes (optional)
-// router.use(auth);
 
-// ✅ Business Management
-router.post("/business", admin.createBusiness);
-router.get("/business", admin.getAllBusinesses);
-router.put("/business/:id", admin.updateBusiness);
-router.delete("/business/:id", admin.deleteBusiness);
+// ========================================
+// PUBLIC ROUTES
+// ========================================
+router.post("/login", adminController.login);//
 
-// ✅ Upload Logo (Form field name must be 'logo')
-router.post("/business/:id/logo", upload.single("logo"), admin.uploadLogo);
+// ========================================
+// TEMPORARILY UNPROTECTED ROUTES (for local testing)
+// ========================================
+router.use(protect);
+
+
+// USERS
+router.get("/users", adminController.getAllUsers);
+router.post("/users", adminController.createAdmin); // ✅ reuse createAdmin
+// router.post("/users", adminController.createUser);
+router.put("/users/:id", adminController.updateUser);
+router.delete("/users/:id", adminController.deleteUser);
+
+
+// --- BUSINESS MANAGEMENT ---
+router.get("/business",protect, adminController.getAllBusinesses);
+router.get("/business/:id", protect, adminController.getBusinessById);
+router.get("/business/:slug",protect, adminController.getBusiness);
+router.post("/business",protect, upload.single("logo"), adminController.createBusiness);
+router.put("/business/:id",protect, adminController.updateBusiness);
+router.put("/business/:id/twilio-number", protect, adminController.assignTwilioNumber);
+router.delete("/business/:id",protect, adminController.deleteBusiness);
+router.post("/business/:id/logo",protect, upload.single("logo"), adminController.uploadLogo);
 
 // ✅ Twilio Numbers Management
 router.get("/twilio-numbers", admin.getTwilioNumbers);
 router.post("/twilio-numbers", admin.addTwilioNumber);
 
-// ✅ Logs and Reports
-router.get("/logs/consents", admin.getConsents);
-// ✅ Twilio Webhook for Inbound SMS
-router.post("/inbound/twilio", admin.handleInboundTwilio);
-router.get("/logs/inbound", admin.getInboundEvents);
+// --- CHECK-IN LOGS ---
+router.get("/logs/consents",protect, adminController.getConsents);
+router.post("/inbound/twilio",protect, adminController.handleInboundTwilio);
+router.get("/logs/inbound",protect, adminController.getInboundEvents);
 
-// ✅ Rewards Settings
-router.put("/business/:id/reward-settings", admin.updateRewardSettings);
-router.get("/business/:id/reward-overview", admin.getBusinessRewardsOverview);
+// --- POINTS LEDGER ---
+router.get("/points-ledger",protect, adminController.getPointsLedger);
+router.get("/business/:id/points-ledger",protect, adminController.getBusinessPointsLedger);
+router.get("/business/:id/checkins",protect, adminController.getBusinessCheckins);
 
 
+// --- CHECK-IN STATISTICS --- ✨ ADD THESE TWO LINES
+router.get("/checkins/daily-stats", protect, adminController.getDailyCheckinStats);
+router.get("/checkins/summary", protect, adminController.getCheckinSummary);
+
+// --- REWARDS ---
+router.get("/rewards",protect, adminController.getAllRewards);
+router.put("/rewards/:id/redeem",protect, adminController.redeemReward);
+router.get("/reward-history",protect, adminController.getRewardHistory);
+router.get("/business/:id/rewards-overview",protect, adminController.getBusinessRewardsOverview);
+router.put("/business/:id/reward-settings",protect, adminController.updateRewardSettings);
+
+// --- BUSINESS REWARDS MANAGEMENT ---
 router.get("/business/:id/rewards", rewardController.getBusinessRewards);
 router.post("/business/:id/rewards", rewardController.addBusinessReward);
 router.delete("/business/:id/rewards/:rewardId", rewardController.deleteBusinessReward);
+router.put("/business/:id/rewards/:rewardId", rewardController.updateBusinessReward);
+router.put("/business/:id/rewards/:rewardId/redeem", rewardController.redeemReward);
+
+// --- CUSTOMER MANAGEMENT ---
+// Search with code support
+// router.get('/admin/customers', auth, customerController.searchCustomers);
+
+// New: Get customer by reward code
+router.get("/customers",protect, customerController.searchCustomers);
+router.get('/admin/customers/by-code/:code', protect, customerController.getCustomerByRewardCode);
+router.get("/customers/:id",protect , customerController.getCustomerDetails);
+router.post("/customers/:id/checkin", customerController.addManualCheckin);
+router.put("/customers/:id/status", customerController.updateSubscriberStatus);
+router.put("/customers/:id", customerController.updateCustomer);
+router.delete("/customers/:id", customerController.deleteCustomer);
 
 
-// ✅ Add these two new lines 👇
-router.get("/points-ledger", admin.getPointsLedger);
-router.get("/business/:id/points-ledger", admin.getBusinessPointsLedger);
-router.get("/rewards", admin.getAllRewards);
-//Redeem Reward
-// ✅ Redeem a reward
-router.patch('/reward-history/redeem', admin.redeemReward);// GET all active rewards (not redeemed and not expired)
-router.get("/rewards/active", rewardController.getRewards);
+// Admin routes (by customer ID)
+router.post("/customers/:id/block", protect, kioskController.blockCustomerById);
+router.post("/customers/:id/unblock", protect, kioskController.unblockCustomerById);
 
+// Legacy kiosk routes (by phone)
+router.post("/admin/unblock-customer", protect, kioskController.unblockCustomer);
+router.post("/admin/block-customer", protect, kioskController.blockCustomer);
+// --- CSV IMPORT ---
+router.post("/customers/import", protect,uploadCSV.single("csv"), csvImportController.importCustomersCSV);
+// router.post("/customers/import", protect, uploadCSV.single("csv"), importCustomers);
+router.get("/customers/import-history", csvImportController.getImportHistory);
+router.post("/create-admin", adminController.createAdmin);
 
-
-//reward history
-router.get("/reward-history", admin.getRewardHistory);
-
-
-// ✅ NEW: Fetch all inbound messages
-// router.get("/inbound", adminController.getInboundEvents);
+// --- ADMIN CREATION (keep protected if needed)
+router.post("/create-admin", adminController.createAdmin);
 
 module.exports = router;
