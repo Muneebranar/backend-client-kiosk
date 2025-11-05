@@ -89,7 +89,7 @@ const customerSchema = new mongoose.Schema(
     },
     subscriberStatus: {
       type: String,
-      enum: ["active", "invalid", "blocked", "opted-out"],
+      enum: ["active", "invalid", "blocked", "opted-out", "unsubscribed"],
       default: "active",
     },
     points: {
@@ -118,6 +118,16 @@ const customerSchema = new mongoose.Schema(
       default: false,
     },
     ageVerifiedAt: {
+      type: Date,
+    },
+    // ⚠️ ADD THESE FIELDS if they don't exist
+    blockDate: {
+      type: Date,
+    },
+    blockReason: {
+      type: String,
+    },
+    unblockDate: {
       type: Date,
     },
     metadata: {

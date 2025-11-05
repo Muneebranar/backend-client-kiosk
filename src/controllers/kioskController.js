@@ -1,21 +1,21 @@
-  const Business = require("../models/Business");
-  const Checkin = require("../models/Checkin");
-  const InboundEvent = require("../models/InboundEvent");
-  const PointsLedger = require("../models/PointsLedger");
-  const Reward = require("../models/Reward");
-  const RewardHistory = require("../models/rewardHistory");
+  // const Business = require("../models/Business");
+  // const Checkin = require("../models/Checkin");
+  // const InboundEvent = require("../models/InboundEvent");
+  // const PointsLedger = require("../models/PointsLedger");
+  // const Reward = require("../models/Reward");
+  // const RewardHistory = require("../models/rewardHistory");
 
 
 
-  const { sendComplianceSms, client } = require("../services/twilioService");
-  const twilio = require("twilio");
-  // ✅ Normalize phone number helper
-  const normalizePhone = (num) => {
-    if (!num) return num;
-    const digits = num.toString().replace(/\D/g, "");
-    if (num.trim().startsWith("+")) return `+${digits}`;
-    return `+${digits}`;
-  };
+  // const { sendComplianceSms, client } = require("../services/twilioService");
+  // const twilio = require("twilio");
+  // // ✅ Normalize phone number helper
+  // const normalizePhone = (num) => {
+  //   if (!num) return num;
+  //   const digits = num.toString().replace(/\D/g, "");
+  //   if (num.trim().startsWith("+")) return `+${digits}`;
+  //   return `+${digits}`;
+  // };
 
 
 
@@ -709,13 +709,12 @@ const normalizePhone = (num) => {
 /**
  * 📲 POST /api/kiosk/checkin
  * Main check-in endpoint - creates/updates Customer record
- */
-/**
- * 📲 POST /api/kiosk/checkin
- * Main check-in endpoint - creates/updates Customer record
  * ✅ MODIFIED: 24-hour cooldown for earning points
  */
-exports.checkin = async (req, res) => {
+// kioskController.js - checkin function
+// Updated to use CheckinLog with customerId
+
+  exports.checkin = async (req, res) => {
   try {
     const { phone, businessSlug, dateOfBirth } = req.body;
 
@@ -800,10 +799,10 @@ exports.checkin = async (req, res) => {
     if (customer && customer.subscriberStatus === 'blocked') {
       console.log("🚫 Customer is blocked:", normalizedPhone);
       
-      // Log the blocked attempt
       try {
         await CheckinLog.create({
           businessId: business._id,
+          customerId: customer._id,
           phone: normalizedPhone,
           countryCode: "+1",
           status: "kiosk",
@@ -830,10 +829,10 @@ exports.checkin = async (req, res) => {
     if (customer && customer.subscriberStatus === 'opted-out') {
       console.log("⚠️ Customer is opted-out:", normalizedPhone);
       
-      // Log the opted-out attempt
       try {
         await CheckinLog.create({
           businessId: business._id,
+          customerId: customer._id,
           phone: normalizedPhone,
           countryCode: "+1",
           status: "kiosk",
@@ -862,59 +861,106 @@ exports.checkin = async (req, res) => {
     // ========== CHECK IF RECENTLY UNBLOCKED ==========
     if (customer && customer.unblockDate) {
       const hoursSinceUnblock = (Date.now() - new Date(customer.unblockDate).getTime()) / (1000 * 60 * 60);
-      
-      // If unblocked within last 24 hours, show welcome back message
       if (hoursSinceUnblock < 24) {
         isNewlyUnblocked = true;
       }
     }
 
     // ========== 24-HOUR COOLDOWN CHECK ==========
-    // ✅ CHANGED: From 0.1 minutes to 24 hours (1440 minutes)
-    const cooldownHours = 24; // ✅ NEW: 24-hour cooldown period
-    const cooldownMinutes = cooldownHours * 60; // ✅ CHANGED: Convert to minutes
+    const cooldownHours = 24;
     let isInCooldown = false;
     let remainingHours = 0;
     let remainingMinutes = 0;
 
     if (customer && customer.lastCheckinAt) {
-      // ✅ CHANGED: Calculate hours instead of minutes
       const hoursSinceLast = (Date.now() - new Date(customer.lastCheckinAt)) / (1000 * 60 * 60);
-      isInCooldown = hoursSinceLast < cooldownHours; // ✅ CHANGED: Check against 24 hours
+      isInCooldown = hoursSinceLast < cooldownHours;
       
       if (isInCooldown) {
-        remainingHours = Math.floor(cooldownHours - hoursSinceLast); // ✅ NEW: Calculate remaining hours
-        remainingMinutes = Math.ceil((cooldownHours - hoursSinceLast - remainingHours) * 60); // ✅ NEW: Calculate remaining minutes
+        remainingHours = Math.floor(cooldownHours - hoursSinceLast);
+        remainingMinutes = Math.ceil((cooldownHours - hoursSinceLast - remainingHours) * 60);
       }
     }
 
     // ========== DETERMINE POINTS TO AWARD ==========
-    // ✅ NEW: Only award points if NOT in cooldown
     const pointsToAward = isInCooldown ? 0 : 1;
 
-    // ========== CREATE CHECKIN LOG (ALWAYS) ==========
+    // ========== CREATE OR UPDATE CUSTOMER RECORD FIRST ==========
+    try {
+      if (customer) {
+        if (isInCooldown) {
+          customer.totalCheckins += 1;
+          console.log(`⏳ Cooldown active: ${remainingHours}h ${remainingMinutes}m remaining. No points awarded. Total checkins: ${customer.totalCheckins}`);
+        } else {
+          customer.points += 1;
+          customer.totalCheckins += 1;
+          customer.lastCheckinAt = new Date();
+          console.log(`✅ Cooldown passed. Point awarded. Total checkins: ${customer.totalCheckins}, Total points: ${customer.points}`);
+        }
+
+        if (customer.unblockDate && isNewlyUnblocked) {
+          const hoursSinceUnblock = (Date.now() - new Date(customer.unblockDate).getTime()) / (1000 * 60 * 60);
+          if (hoursSinceUnblock >= 24) {
+            customer.unblockDate = undefined;
+          }
+        }
+
+        if (dateOfBirth && !customer.ageVerified) {
+          customer.ageVerified = true;
+          customer.ageVerifiedAt = new Date();
+        }
+
+        await customer.save();
+        console.log("🔄 Customer updated and saved:", customer._id);
+      } else {
+        // ✅ NEW CUSTOMER
+        customer = await Customer.create({
+          phone: normalizedPhone,
+          countryCode: "+1",
+          businessId: business._id,
+          subscriberStatus: "active",
+          points: 1,
+          totalCheckins: 1,
+          firstCheckinAt: new Date(),
+          lastCheckinAt: new Date(),
+          consentGiven: true,
+          consentTimestamp: new Date(),
+          ageVerified: !!dateOfBirth,
+          ageVerifiedAt: dateOfBirth ? new Date() : undefined,
+        });
+
+        console.log("✅ New customer created:", customer._id);
+      }
+    } catch (err) {
+      console.error("❌ Failed to update customer:", err);
+      return res.status(500).json({ 
+        ok: false, 
+        error: "Failed to update customer record" 
+      });
+    }
+
+    // ✅ CREATE CHECKIN LOG with customerId
     let checkinLog;
     try {
       const logData = {
         businessId: business._id,
+        customerId: customer._id,
         phone: normalizedPhone,
         countryCode: "+1",
         status: "kiosk",
-        pointsAwarded: pointsToAward, // ✅ CHANGED: Use calculated points
+        pointsAwarded: pointsToAward,
       };
 
-      // ✅ CHANGED: Add 24-hour cooldown metadata
       if (isInCooldown) {
         logData.metadata = {
           cooldown: true,
-          cooldownRemainingHours: remainingHours, // ✅ NEW: Track remaining hours
-          cooldownRemainingMinutes: remainingMinutes, // ✅ NEW: Track remaining minutes
-          attemptReason: "Check-in attempted within 24-hour cooldown period", // ✅ CHANGED: Updated message
-          lastCheckinAt: customer.lastCheckinAt // ✅ NEW: Track when they last checked in
+          cooldownRemainingHours: remainingHours,
+          cooldownRemainingMinutes: remainingMinutes,
+          attemptReason: "Check-in attempted within 24-hour cooldown period",
+          lastCheckinAt: customer.lastCheckinAt
         };
       }
 
-      // Add unblock metadata if newly unblocked
       if (isNewlyUnblocked) {
         logData.metadata = {
           ...logData.metadata,
@@ -924,92 +970,18 @@ exports.checkin = async (req, res) => {
       }
 
       checkinLog = await CheckinLog.create(logData);
-      console.log("💾 Checkin log created:", checkinLog._id);
+      console.log("💾 CheckinLog created:", checkinLog._id);
     } catch (err) {
       console.error("❌ Failed to create checkin log:", err);
-      return res.status(500).json({ 
-        ok: false, 
-        error: "Failed to log checkin" 
-      });
     }
 
-    // ========== IF IN COOLDOWN, STILL UPDATE CHECKIN COUNT BUT NOT POINTS ==========
-    // ✅ CHANGED: Cooldown now means they can check in but don't earn points
-    try {
-      if (customer) {
-        // ✅ CHANGED: Update customer record differently based on cooldown
-        if (isInCooldown) {
-          // During cooldown: increment checkin count but DON'T add points
-          customer.totalCheckins += 1;
-          // lastCheckinAt stays the same (from the last points-earning checkin)
-          console.log(`⏳ Cooldown active: ${remainingHours}h ${remainingMinutes}m remaining. No points awarded.`);
-        } else {
-          // After cooldown: increment both checkins AND points
-          customer.points += 1; // ✅ Only add point if cooldown passed
-          customer.totalCheckins += 1;
-          customer.lastCheckinAt = new Date(); // ✅ CHANGED: Only update timestamp when points awarded
-          console.log(`✅ Cooldown passed. Point awarded. Next point available in 24 hours.`);
-        }
-
-        // Clear unblockDate flag after first successful checkin post-unblock
-        if (customer.unblockDate && isNewlyUnblocked) {
-          const hoursSinceUnblock = (Date.now() - new Date(customer.unblockDate).getTime()) / (1000 * 60 * 60);
-          if (hoursSinceUnblock >= 24) {
-            customer.unblockDate = undefined;
-          }
-        }
-
-        // Update age verification if provided
-        if (dateOfBirth && !customer.ageVerified) {
-          customer.ageVerified = true;
-          customer.ageVerifiedAt = new Date();
-        }
-
-        await customer.save();
-        console.log("🔄 Customer updated:", customer._id);
-      } else {
-        // ✅ NEW CUSTOMER: Always award first point
-        customer = await Customer.create({
-          phone: normalizedPhone,
-          countryCode: "+1",
-          businessId: business._id,
-          subscriberStatus: "active",
-          points: 1, // ✅ First checkin always gets a point
-          totalCheckins: 1,
-          firstCheckinAt: new Date(),
-          lastCheckinAt: new Date(), // ✅ Set the cooldown timer
-          consentGiven: true,
-          consentTimestamp: new Date(),
-          ageVerified: !!dateOfBirth,
-          ageVerifiedAt: dateOfBirth ? new Date() : undefined,
-        });
-
-      console.log("📘 Points Ledger updated:", ledger);
-    } catch (err) {
-      console.error("❌ Failed to update points ledger:", err);
-      
-      // Rollback: Delete the checkin log
-      try {
-        await Checkin.deleteOne({ _id: newCheckin._id });
-        console.log("🔄 Rolled back checkin log");
-      } catch (rollbackErr) {
-        console.error("❌ Rollback failed:", rollbackErr);
-      }
-      
-      return res.status(500).json({ 
-        ok: false, 
-        error: "Failed to award points" 
-      });
-    }
-
-    // ========== SEND COMPLIANCE & WELCOME SMS (FIRST CHECKIN ONLY) ==========
+    // ========== SEND COMPLIANCE & WELCOME SMS ==========
     if (isFirstCheckin) {
       try {
         await sendComplianceSms(business, normalizedPhone, fromNumber);
         console.log("✅ Compliance SMS sent");
       } catch (err) {
         console.error("❌ Compliance SMS failed:", err.message);
-        // Don't fail the checkin
       }
 
       try {
@@ -1025,129 +997,153 @@ exports.checkin = async (req, res) => {
         console.log("💬 Welcome SMS sent!");
       } catch (err) {
         console.error("❌ Welcome SMS failed:", err.message);
-        // Don't fail the checkin
       }
     }
 
-    // ========== GET TOTAL POINTS AFTER CHECKIN ==========
-    const totalPoints = ledger.points;
-
-    // ========== FETCH REWARD TEMPLATES ==========
-    // ✅ CHANGED: Only check for rewards if points were awarded
+    // ✅ FETCH REWARD TEMPLATES & PROCESS REWARDS
     let newReward = null;
     
-    if (!isInCooldown) { // ✅ NEW: Only process rewards when points are earned
-      const rewardTemplates = await Reward.find({
-        businessId: business._id,
-        phone: { $exists: false }, // Only templates (not assigned to customers)
-        isActive: true,
-      }).sort({ priority: 1 });
+    // Check rewards based on total checkins (not cooldown-dependent)
+    const rewardTemplates = await Reward.find({
+      businessId: business._id,
+      phone: { $exists: false },
+      isActive: true,
+    }).sort({ priority: 1 });
 
-      // ========== PROCESS REWARDS ==========
-      try {
-        for (const template of rewardTemplates) {
-          // Check if customer already has this reward (unredeemed)
-          const alreadyIssued = await Reward.findOne({
+    console.log(`\n📋 Found ${rewardTemplates.length} reward templates for business`);
+    console.log(`👤 Customer has ${customer.totalCheckins} checkins and ${customer.points} points\n`);
+
+    // ========== PROCESS REWARDS ==========
+    try {
+      for (const template of rewardTemplates) {
+        console.log(`🔍 Checking template: ${template.name}`);
+        console.log(`   - Threshold: ${template.threshold} checkins`);
+        console.log(`   - Customer checkins: ${customer.totalCheckins}`);
+        console.log(`   - Threshold met: ${customer.totalCheckins >= template.threshold}`);
+        
+        // ✅ Check if reward already issued
+        const alreadyIssued = await RewardHistory.findOne({
+          businessId: business._id,
+          customerId: customer._id,
+          rewardId: template._id,
+          status: { $ne: 'Redeemed' }
+        });
+
+        console.log(`   - Already issued: ${!!alreadyIssued}`);
+
+        // Check based on TOTAL CHECKINS
+        if (!alreadyIssued && customer.totalCheckins >= template.threshold) {
+          console.log(`   ✅ REWARD TRIGGERED!\n`);
+          
+          // Generate unique reward code
+          const rewardCode = `RW-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+
+          // ✅ Create reward instance for this customer
+          const rewardInstance = await Reward.create({
             businessId: business._id,
             phone: normalizedPhone,
             name: template.name,
+            description: template.description,
+            threshold: template.threshold,
+            code: rewardCode,
+            expiresAt: template.expiryDays 
+              ? new Date(Date.now() + template.expiryDays * 24 * 60 * 60 * 1000)
+              : null,
             redeemed: false,
+            priority: template.priority,
+            isActive: true,
+            discountType: template.discountType || 'none',
+            discountValue: template.discountValue || 0,
           });
 
-          // If not issued yet and customer has enough points
-          if (!alreadyIssued && customer.points >= template.threshold) {
-            // Generate unique reward code
-            const rewardCode = `RW-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+          console.log("🎁 Reward instance created:", rewardInstance._id);
 
-            // Create reward instance for this customer
-            newReward = await Reward.create({
-              businessId: business._id,
-              phone: normalizedPhone,
-              name: template.name,
-              description: template.description,
-              threshold: template.threshold,
-              code: rewardCode,
-              expiresAt: template.expiryDays 
-                ? new Date(Date.now() + template.expiryDays * 24 * 60 * 60 * 1000)
-                : null,
-              redeemed: false,
-              priority: template.priority,
-              isActive: true,
+          // ✅ Log in RewardHistory with customerId
+          const rewardHistory = await RewardHistory.create({
+            businessId: business._id,
+            customerId: customer._id,
+            rewardId: rewardInstance._id,
+            checkinId: checkinLog._id,
+            phone: normalizedPhone,
+            status: "Active",
+          });
+
+          console.log("🧾 RewardHistory entry created successfully:");
+          console.log("   - History ID:", rewardHistory._id);
+          console.log("   - Customer ID:", customer._id);
+          console.log("   - Reward Instance ID:", rewardInstance._id);
+          console.log("   - Status:", rewardHistory.status);
+
+          // Send reward SMS
+          try {
+            const expiryText = template.expiryDays 
+              ? ` Valid for ${template.expiryDays} days.`
+              : "";
+
+            await client.messages.create({
+              to: normalizedPhone,
+              from: fromNumber,
+              body: `🎉 Congrats! After ${customer.totalCheckins} check-ins, you've unlocked ${template.name}! Use code ${rewardCode}.${expiryText}`,
             });
-
-            console.log("🎁 New reward issued:", newReward.code);
-
-            // Log reward issuance into RewardHistory
-            await RewardHistory.create({
-              businessId: business._id,
-              rewardId: newReward._id,
-              checkinId: checkinLog._id,
-              phone: normalizedPhone,
-              status: "Active",
-            });
-            console.log("🧾 RewardHistory entry created");
-
-            // Send reward SMS
-            try {
-              const expiryText = template.expiryDays 
-                ? ` Valid for ${template.expiryDays} days.`
-                : "";
-
-              await client.messages.create({
-                to: normalizedPhone,
-                from: fromNumber,
-                body: `🎉 Congrats! You've unlocked ${template.name}! Use code ${rewardCode}.${expiryText}`,
-              });
-              console.log("📱 Reward SMS sent");
-            } catch (err) {
-              console.error("❌ Reward SMS failed:", err.message);
-            }
-
-            // Only issue one reward per checkin
-            break;
+            console.log("📱 Reward SMS sent successfully");
+          } catch (err) {
+            console.error("❌ Reward SMS failed:", err.message);
           }
+
+          // Store reward data for response
+          newReward = {
+            _id: rewardInstance._id,
+            name: template.name,
+            code: rewardCode,
+            description: template.description,
+            expiresAt: rewardInstance.expiresAt,
+            threshold: template.threshold,
+            discountType: rewardInstance.discountType,
+            discountValue: rewardInstance.discountValue,
+          };
+
+          console.log("🎁 Reward data prepared for response:", newReward);
+
+          // Only issue one reward per checkin
+          break;
+        } else {
+          console.log(`   ❌ Reward not triggered\n`);
         }
-      } catch (err) {
-        console.error("❌ Reward processing error:", err.message);
       }
+    } catch (err) {
+      console.error("❌ Reward processing error:", err.message);
+      console.error(err.stack);
     }
 
     // ========== SUCCESS RESPONSE ==========
-    console.log("✅ Check-in complete");
+    console.log("✅ Check-in complete\n");
     
-    // ✅ CHANGED: Response includes cooldown information
     const response = {
       ok: true,
       phone: normalizedPhone,
       business: business.name,
       totalPoints: customer.points,
       totalCheckins: customer.totalCheckins,
-      pointsAwarded: pointsToAward, // ✅ NEW: Tell them if they got points
+      pointsAwarded: pointsToAward,
       isNewCustomer: isFirstCheckin,
       isNewlyUnblocked: isNewlyUnblocked,
       subscriberStatus: customer.subscriberStatus,
-      newReward: newReward ? {
-        name: newReward.name,
-        code: newReward.code,
-        description: newReward.description,
-        expiresAt: newReward.expiresAt,
-      } : null,
+      newReward: newReward,
     };
 
-    // ✅ NEW: Add cooldown information to response
     if (isInCooldown) {
       response.cooldown = {
         active: true,
         remainingHours: remainingHours,
         remainingMinutes: remainingMinutes,
-        message: `You can earn your next point in ${remainingHours}h ${remainingMinutes}m`, // ✅ NEW: User-friendly message
-        nextPointAvailableAt: new Date(new Date(customer.lastCheckinAt).getTime() + (24 * 60 * 60 * 1000)) // ✅ NEW: Exact timestamp
+        message: `You can earn your next point in ${remainingHours}h ${remainingMinutes}m`,
+        nextPointAvailableAt: new Date(new Date(customer.lastCheckinAt).getTime() + (24 * 60 * 60 * 1000))
       };
     } else if (customer.lastCheckinAt) {
       response.cooldown = {
         active: false,
-        message: "Point earned! Check in again in 24 hours for your next point.", // ✅ NEW: Success message
-        nextPointAvailableAt: new Date(Date.now() + (24 * 60 * 60 * 1000)) // ✅ NEW: When next point available
+        message: "Point earned! Check in again in 24 hours for your next point.",
+        nextPointAvailableAt: new Date(Date.now() + (24 * 60 * 60 * 1000))
       };
     }
 
@@ -1155,8 +1151,8 @@ exports.checkin = async (req, res) => {
 
   } catch (err) {
     console.error("💥 Check-in error:", err);
+    console.error(err.stack);
 
-    // Handle specific mongoose errors
     if (err.name === "ValidationError") {
       return res.status(400).json({
         ok: false,
@@ -1175,108 +1171,253 @@ exports.checkin = async (req, res) => {
       });
     }
 
-    // Generic error
     res.status(500).json({ 
       ok: false, 
       error: "Server error" 
     });
   }
 };
+/**
+ * 💬 POST /api/twilio/webhook
+ * Handles incoming STOP / START / HELP / OTHER messages from Twilio.
+ */
+exports.twilioWebhook = async (req, res) => {
+  try {
+    const { From, Body, MessageSid, To } = req.body;
+    const incomingFrom = normalizePhone(From);
+    console.log("📩 Incoming Twilio message:", req.body);
 
-  /**
-   * 💬 POST /api/twilio/webhook
-   * Handles incoming STOP / START / HELP / OTHER messages from Twilio.
-   */
-  exports.twilioWebhook = async (req, res) => {
-    try {
-      const { From, Body, MessageSid, To } = req.body;
-      const incomingFrom = normalizePhone(From);
-      console.log("📩 Incoming Twilio message:", req.body);
-
-      if (!From) {
-        console.warn("⚠️ Webhook missing 'From' number, ignoring.");
-        return res.type("text/xml").send("<Response></Response>");
-      }
-
-      const incoming = Body ? Body.trim().toUpperCase() : "";
-      let eventType = "OTHER";
-      if (incoming.includes("STOP")) eventType = "STOP";
-      else if (incoming.includes("START")) eventType = "START";
-      else if (incoming.includes("HELP")) eventType = "HELP";
-
-      // 🔹 Find last check-in by phone (if any)
-      const checkin = await Checkin.findOne({ phone: incomingFrom }).sort({ createdAt: -1 });
-
-      // 🔹 Log inbound event
-      const inbound = await InboundEvent.create({
-        fromNumber: incomingFrom,
-        body: Body,
-        eventType,
-        checkinId: checkin ? checkin._id : null,
-        raw: req.body,
-      });
-
-      console.log("✅ InboundEvent saved:", inbound._id, "Type:", eventType);
-
-      // 🔹 Update subscription status if STOP/START
-      if (checkin) {
-        if (eventType === "STOP") checkin.unsubscribed = true;
-        else if (eventType === "START") checkin.unsubscribed = false;
-        await checkin.save();
-      }
-
-      // 🔹 Respond to Twilio
-      const twiml = new twilio.twiml.MessagingResponse();
-
-      if (eventType === "STOP") {
-        twiml.message("You have been unsubscribed. Reply START to rejoin.");
-      } else if (eventType === "START") {
-        twiml.message("You are now subscribed again. Thank you!");
-      } else if (eventType === "HELP") {
-        twiml.message("Reply START to subscribe again or STOP to unsubscribe.");
-      } else {
-        twiml.message("Thanks for your message! We'll get back to you soon.");
-      }
-
-      res.type("text/xml").send(twiml.toString());
-    } catch (err) {
-      console.error("💥 Webhook error:", err);
-      res.status(500).send("<Response></Response>");
+    if (!From) {
+      console.warn("⚠️ Webhook missing 'From' number, ignoring.");
+      return res.type("text/xml").send("<Response></Response>");
     }
-  };
 
+    const incoming = Body ? Body.trim().toUpperCase() : "";
+    let eventType = "OTHER";
+    if (incoming.includes("STOP")) eventType = "STOP";
+    else if (incoming.includes("START")) eventType = "START";
+    else if (incoming.includes("HELP")) eventType = "HELP";
 
+    // 🔹 Find last check-in by phone (if any)
+    const checkin = await CheckinLog.findOne({ phone: incomingFrom }).sort({ createdAt: -1 });
 
+    // 🔹 Log inbound event
+    const inbound = await InboundEvent.create({
+      fromNumber: incomingFrom,
+      body: Body,
+      eventType,
+      checkinId: checkin ? checkin._id : null,
+      raw: req.body,
+    });
 
-  /**
-   * 🏪 GET /api/kiosk/:slug
-   * Returns business details by slug for kiosk display.
-   */
-  exports.getKioskBySlug = async (req, res) => {
-    try {
-      const { slug } = req.params;
-      console.log(`🟢 Kiosk request for slug: ${slug}`);
+    console.log("✅ InboundEvent saved:", inbound._id, "Type:", eventType);
 
-      const business = await Business.findOne({ slug });
-      if (!business) {
-        return res.status(404).json({ error: "Business not found" });
-      }
-
-      // 🔹 Fetch current active rewards for display
-      const activeRewards = await Reward.find({
-        businessId: business._id,
-        redeemed: false,
-        $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
-      }).sort({ createdAt: -1 });
-
-      res.json({
-        ok: true,
-        business,
-        activeRewards,
-        message: `Loaded kiosk for ${business.name}`,
-      });
-    } catch (err) {
-      console.error("❌ Failed to load kiosk:", err);
-      res.status(500).json({ error: "server error" });
+    // 🔹 Update subscription status if STOP/START
+    if (checkin) {
+      if (eventType === "STOP") checkin.unsubscribed = true;
+      else if (eventType === "START") checkin.unsubscribed = false;
+      await checkin.save();
     }
-  };
+
+    // 🔹 Respond to Twilio
+    const twiml = new twilio.twiml.MessagingResponse();
+
+    if (eventType === "STOP") {
+      twiml.message("You have been unsubscribed. Reply START to rejoin.");
+    } else if (eventType === "START") {
+      twiml.message("You are now subscribed again. Thank you!");
+    } else if (eventType === "HELP") {
+      twiml.message("Reply START to subscribe again or STOP to unsubscribe.");
+    } else {
+      twiml.message("Thanks for your message! We'll get back to you soon.");
+    }
+
+    res.type("text/xml").send(twiml.toString());
+  } catch (err) {
+    console.error("💥 Webhook error:", err);
+    res.status(500).send("<Response></Response>");
+  }
+};
+
+/**
+ * 🏪 GET /api/kiosk/:slug
+ * Returns business details by slug for kiosk display.
+ */
+exports.getKioskBySlug = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    console.log(`🟢 Kiosk request for slug: ${slug}`);
+
+    const business = await Business.findOne({ slug });
+    if (!business) {
+      return res.status(404).json({ error: "Business not found" });
+    }
+
+    // 🔹 Fetch current active rewards for display
+    const activeRewards = await Reward.find({
+      businessId: business._id,
+      redeemed: false,
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+    }).sort({ createdAt: -1 });
+
+    res.json({
+      ok: true,
+      business,
+      activeRewards,
+      message: `Loaded kiosk for ${business.name}`,
+    });
+  } catch (err) {
+    console.error("❌ Failed to load kiosk:", err);
+    res.status(500).json({ error: "server error" });
+  }
+};
+exports.blockCustomer = async (req, res) => {
+  try {
+    const { customerId, reason = "Blocked by admin" } = req.body;  // ⚠️ ADD REASON
+    
+    if (!customerId) return res.status(400).json({ ok: false, error: "customerId is required" });
+
+    const customer = await Customer.findById(customerId);
+    if (!customer) return res.status(404).json({ ok: false, error: "Customer not found" });
+
+    if (req.user.role === "staff") return res.status(403).json({ ok: false, error: "Staff cannot block customers" });
+    if (req.user.role !== "master" && customer.businessId.toString() !== req.user.businessId.toString()) {
+      return res.status(403).json({ ok: false, error: "Access denied" });
+    }
+
+    // ⚠️ Track block date and reason
+    customer.subscriberStatus = "blocked";
+    customer.blockDate = new Date();  // ⚠️ ADD THIS
+    customer.blockReason = reason;    // ⚠️ ADD THIS
+    
+    await customer.save();
+
+    console.log(`🚫 Customer blocked: ${customer.phone}, Reason: ${reason}`);
+
+    res.json({ 
+      ok: true, 
+      message: "Customer blocked successfully", 
+      customer 
+    });
+  } catch (err) {
+    console.error("Block Customer Error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+};
+/**
+ * Block a customer by ID (soft delete)
+ * POST /customers/:id/block
+ */
+exports.blockCustomerById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason = "Blocked by admin" } = req.body;  // ⚠️ ADD REASON
+
+    const customer = await Customer.findById(id);
+    if (!customer) {
+      return res.status(404).json({ ok: false, error: "Customer not found" });
+    }
+
+    // Access control
+    if (req.user.role === "staff") {
+      return res.status(403).json({ ok: false, error: "Staff cannot block customers" });
+    }
+
+    if (req.user.role !== "master" && customer.businessId.toString() !== req.user.businessId.toString()) {
+      return res.status(403).json({ ok: false, error: "Access denied" });
+    }
+
+    // ⚠️ Track block date and reason
+    customer.subscriberStatus = "blocked";
+    customer.blockDate = new Date();  // ⚠️ ADD THIS
+    customer.blockReason = reason;    // ⚠️ ADD THIS
+    
+    await customer.save();
+
+    console.log(`🚫 Customer blocked: ${customer.phone}, Reason: ${reason}`);
+
+    res.json({ ok: true, message: "Customer blocked successfully", customer });
+  } catch (err) {
+    console.error("Block Customer Error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+};
+
+/**
+ * Unblock a customer by ID
+ * POST /customers/:id/unblock
+ */
+exports.unblockCustomerById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const customer = await Customer.findById(id);
+    if (!customer) {
+      return res.status(404).json({ ok: false, error: "Customer not found" });
+    }
+
+    // Access control
+    if (req.user.role === "staff") {
+      return res.status(403).json({ ok: false, error: "Staff cannot unblock customers" });
+    }
+
+    if (req.user.role !== "master" && customer.businessId.toString() !== req.user.businessId.toString()) {
+      return res.status(403).json({ ok: false, error: "Access denied" });
+    }
+
+    // ⚠️ RESET POINTS TO 0 when unblocking
+    customer.subscriberStatus = "active";
+    customer.points = 0;  // ⚠️ ADD THIS
+    customer.unblockDate = new Date();  // ⚠️ ADD THIS - Track when unblocked
+    
+    await customer.save();
+
+    console.log(`🔓 Customer unblocked: ${customer.phone}, Points reset to 0`);
+
+    res.json({ 
+      ok: true, 
+      message: "Customer unblocked successfully. Points reset to 0.", 
+      customer 
+    });
+  } catch (err) {
+    console.error("Unblock Customer Error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+};
+/**
+ * Unblock customer by ID (body)
+ * POST /admin/unblock-customer
+ * Body: { customerId: "..." }
+ */
+exports.unblockCustomer = async (req, res) => {
+  try {
+    const { customerId } = req.body;
+    if (!customerId) return res.status(400).json({ ok: false, error: "customerId is required" });
+
+    const customer = await Customer.findById(customerId);
+    if (!customer) return res.status(404).json({ ok: false, error: "Customer not found" });
+
+    if (req.user.role === "staff") return res.status(403).json({ ok: false, error: "Staff cannot unblock customers" });
+    if (req.user.role !== "master" && customer.businessId.toString() !== req.user.businessId.toString()) {
+      return res.status(403).json({ ok: false, error: "Access denied" });
+    }
+
+    // ⚠️ RESET POINTS TO 0 when unblocking
+    customer.subscriberStatus = "active";
+    customer.points = 0;  // ⚠️ ADD THIS
+    customer.unblockDate = new Date();  // ⚠️ ADD THIS
+    
+    await customer.save();
+
+    console.log(`🔓 Customer unblocked: ${customer.phone}, Points reset to 0`);
+
+    res.json({ 
+      ok: true, 
+      message: "Customer unblocked successfully. Points reset to 0.", 
+      customer 
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+};

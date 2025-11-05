@@ -18,9 +18,32 @@ const rewardSchema = new mongoose.Schema(
     expiryDays: { type: Number },
     priority: { type: Number, default: 1 },
     isActive: { type: Boolean, default: true },
+    
+    // ✅ Discount fields
+    discountType: { 
+      type: String, 
+      enum: ['percentage', 'fixed', 'none'], 
+      default: 'none' 
+    },
+    discountValue: { 
+      type: Number, 
+      default: 0,
+      min: 0 
+    },
   },
   { timestamps: true }
 );
+
+// ✅ Validation: Ensure percentage discounts are between 0-100
+rewardSchema.pre('save', function(next) {
+  if (this.discountType === 'percentage' && this.discountValue > 100) {
+    this.discountValue = 100;
+  }
+  if (this.discountType === 'none') {
+    this.discountValue = 0;
+  }
+  next();
+});
 
 // ✅ Auto-delete issued rewards when a template is deleted
 rewardSchema.pre("findOneAndDelete", async function (next) {
@@ -40,5 +63,35 @@ rewardSchema.pre("findOneAndDelete", async function (next) {
   }
   next();
 });
+
+// ✅ Virtual to get discount display text
+rewardSchema.virtual('discountDisplay').get(function() {
+  if (this.discountType === 'percentage') {
+    return `${this.discountValue}% off`;
+  } else if (this.discountType === 'fixed') {
+    return `$${this.discountValue.toFixed(2)} off`;
+  }
+  return 'No discount';
+});
+
+// ✅ Virtual to check if reward is expired
+rewardSchema.virtual('isExpired').get(function() {
+  if (!this.expiresAt) return false;
+  return new Date() > this.expiresAt;
+});
+
+// ✅ Virtual to check if reward is valid (not redeemed and not expired)
+rewardSchema.virtual('isValid').get(function() {
+  return !this.redeemed && !this.isExpired && this.isActive;
+});
+
+// ✅ Ensure virtuals are included when converting to JSON
+rewardSchema.set('toJSON', { virtuals: true });
+rewardSchema.set('toObject', { virtuals: true });
+
+// ✅ Index for faster queries
+rewardSchema.index({ businessId: 1, phone: 1 });
+rewardSchema.index({ businessId: 1, redeemed: 1, expiresAt: 1 });
+rewardSchema.index({ code: 1 });
 
 module.exports = mongoose.model("Reward", rewardSchema);

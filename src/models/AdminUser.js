@@ -31,8 +31,6 @@ const UserSchema = new Schema({
 // module.exports = mongoose.model('AdminUser', UserSchema);
 
 // models/AdminUser.js
-const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
 
 const adminUserSchema = new mongoose.Schema(
   {
