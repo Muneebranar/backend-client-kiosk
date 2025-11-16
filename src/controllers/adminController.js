@@ -1,3 +1,4 @@
+const twilio = require("twilio");
 const AdminUser = require("../models/AdminUser");
 const Business = require("../models/Business");
 const Checkin = require("../models/Checkin");
@@ -15,16 +16,6 @@ const mongoose = require('mongoose');
 const fs = require("fs");
 const path = require("path"); // ✅ <--- this was missing
 const RewardHistory = require("../models/rewardHistory");
-
-
-
-
-
-
-
-
-
-
 
 // ==========================================
 // 🔐 AUTHENTICATION & USER MANAGEMENT
@@ -656,28 +647,70 @@ res.status(500).json({ ok: false, error: err.message });
 exports.deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // ✅ Get current user ID (handle both _id and id)
+    const currentUserId = req.user._id ? req.user._id.toString() : req.user.id;
+    
     // 🛡 Safety: prevent self-deletion
-    if (req.user._id.toString() === id) {
-      return res.status(400).json({ ok: false, error: "You cannot delete your own account" });
+    if (currentUserId === id) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: "You cannot delete your own account" 
+      });
     }
 
     // 🧩 Fetch target user
     const targetUser = await AdminUser.findById(id);
     if (!targetUser) {
-      return res.status(404).json({ ok: false, error: "User not found" });
+      return res.status(404).json({ 
+        ok: false, 
+        error: "User not found" 
+      });
     }
 
     // 🛡 Role-based access control
     if (req.user.role === "staff") {
-      return res.status(403).json({ ok: false, error: "Staff cannot delete users" });
+      return res.status(403).json({ 
+        ok: false, 
+        error: "Staff cannot delete users" 
+      });
     }
 
-    if (req.user.role === "admin" && targetUser.role === "admin") {
-      return res.status(403).json({ ok: false, error: "Admins cannot delete other admins" });
+    if (req.user.role === "admin") {
+      // Admins can only delete staff from their own business
+      if (targetUser.role === "admin") {
+        return res.status(403).json({ 
+          ok: false, 
+          error: "Admins cannot delete other admins" 
+        });
+      }
+      
+      // ✅ Check if target user belongs to the same business
+      const adminBusinessId = req.user.businessId ? req.user.businessId.toString() : null;
+      const targetBusinessId = targetUser.businessId ? targetUser.businessId.toString() : null;
+      
+      if (adminBusinessId && targetBusinessId && adminBusinessId !== targetBusinessId) {
+        return res.status(403).json({ 
+          ok: false, 
+          error: "You can only delete users from your own business" 
+        });
+      }
+    }
+
+    // 🛡 Master/Superadmin protection
+    if (targetUser.role === "master" || targetUser.role === "superadmin") {
+      if (req.user.role !== "master" && req.user.role !== "superadmin") {
+        return res.status(403).json({ 
+          ok: false, 
+          error: "Only master/superadmin can delete master/superadmin users" 
+        });
+      }
     }
 
     // 🗑 Perform deletion
     await AdminUser.findByIdAndDelete(id);
+
+    console.log(`✅ User deleted: ${targetUser.name} (${targetUser.email}) by ${req.user.name || req.user.id}`);
 
     res.json({
       ok: true,
@@ -685,10 +718,12 @@ exports.deleteUser = async (req, res) => {
     });
   } catch (err) {
     console.error("❌ Delete User Error:", err);
-    res.status(500).json({ ok: false, error: "Server error while deleting user" });
+    res.status(500).json({ 
+      ok: false, 
+      error: "Server error while deleting user" 
+    });
   }
 };
-
 
 
 /* ---------------------------------------------------
@@ -745,14 +780,36 @@ exports.createBusiness = async (req, res) => {
  */
 exports.getTwilioNumbers = async (req, res) => {
   try {
-    const numbers = await TwilioNumber.find().sort({ createdAt: -1 });
+    // Get numbers from database
+    const dbNumbers = await TwilioNumber.find().sort({ createdAt: -1 });
+
+    // Get default number from environment
+    const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
     
+    // Combine database numbers with default number
+    const allNumbers = [...dbNumbers];
+    
+    // Add default number if it exists and isn't already in the database
+    if (defaultNumber) {
+      const isInDb = dbNumbers.some(num => num.number === defaultNumber);
+      if (!isInDb) {
+        allNumbers.unshift({
+          _id: defaultNumber, // Use the number itself as ID for default
+          number: defaultNumber,
+          friendlyName: "Default System Number",
+          isActive: true,
+          isDefault: true, // Flag to identify it's from env
+          assignedBusinesses: []
+        });
+      }
+    }
+
     res.json({ 
       ok: true, 
-      numbers 
+      numbers: allNumbers 
     });
   } catch (err) {
-    console.error("❌ Failed to get Twilio numbers:", err);
+    console.error("❌ Failed to fetch Twilio numbers:", err);
     res.status(500).json({ 
       ok: false, 
       error: "Failed to fetch Twilio numbers" 
@@ -794,7 +851,16 @@ exports.addTwilioNumber = async (req, res) => {
       });
     }
 
-    // Check if number already exists
+    // Check if it's the default number
+    const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
+    if (formattedNumber === defaultNumber) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: "This is the default system number. It's already available." 
+      });
+    }
+
+    // Check if number already exists in database
     const existingNumber = await TwilioNumber.findOne({ number: formattedNumber });
     if (existingNumber) {
       return res.status(400).json({ 
@@ -826,7 +892,6 @@ exports.addTwilioNumber = async (req, res) => {
     });
   }
 };
-
 /**
  * Update Twilio number
  * PUT /admin/twilio-numbers/:id
@@ -835,6 +900,15 @@ exports.updateTwilioNumber = async (req, res) => {
   try {
     const { id } = req.params;
     const { friendlyName, isActive } = req.body;
+
+    // Check if this is the default Twilio number
+    const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
+    if (id === defaultNumber) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: "Cannot update the default Twilio number. It's configured in environment variables." 
+      });
+    }
 
     const twilioNumber = await TwilioNumber.findById(id);
     if (!twilioNumber) {
@@ -869,7 +943,6 @@ exports.updateTwilioNumber = async (req, res) => {
     });
   }
 };
-
 /**
  * Delete Twilio number
  * DELETE /admin/twilio-numbers/:id
@@ -945,10 +1018,6 @@ exports.assignTwilioNumber = async (req, res) => {
     }
 
     // ✅ FIXED: Permission check for master admin and business admins
-    // master = full access to all businesses (no businessId)
-    // admin = can manage their own business only
-    // staff = can manage their own business only
-    
     const isMaster = req.user.role === 'master';
     
     // For database users with businessId
@@ -986,12 +1055,16 @@ exports.assignTwilioNumber = async (req, res) => {
     if (!twilioNumber || twilioNumber === "") {
       console.log('🔄 Unassigning number from business:', business.name);
       
-      // Remove from old Twilio number's assignedBusinesses
+      // Remove from old Twilio number's assignedBusinesses (only if it's in DB)
       if (business.twilioNumber) {
-        await TwilioNumber.updateOne(
-          { number: business.twilioNumber },
-          { $pull: { assignedBusinesses: business._id.toString() } }
-        );
+        const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
+        // Only update DB if it's not the default number
+        if (business.twilioNumber !== defaultNumber) {
+          await TwilioNumber.updateOne(
+            { number: business.twilioNumber },
+            { $pull: { assignedBusinesses: business._id.toString() } }
+          );
+        }
       }
 
       business.twilioNumber = null;
@@ -1007,35 +1080,48 @@ exports.assignTwilioNumber = async (req, res) => {
       });
     }
 
-    // Validate that Twilio number exists
-    const twilioDoc = await TwilioNumber.findOne({ number: twilioNumber });
-    if (!twilioDoc) {
-      console.log('❌ Twilio number not found:', twilioNumber);
-      return res.status(400).json({ 
-        ok: false, 
-        error: "Invalid Twilio number - not found in system" 
-      });
+    // Check if it's the default number from environment
+    const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
+    const isDefaultNumber = twilioNumber === defaultNumber;
+
+    // Validate that Twilio number exists (skip validation for default number)
+    if (!isDefaultNumber) {
+      const twilioDoc = await TwilioNumber.findOne({ number: twilioNumber });
+      if (!twilioDoc) {
+        console.log('❌ Twilio number not found in database:', twilioNumber);
+        return res.status(400).json({ 
+          ok: false, 
+          error: "Invalid Twilio number - not found in system" 
+        });
+      }
     }
 
     console.log('🔄 Assigning number to business:', {
       business: business.name,
       number: twilioNumber,
+      isDefault: isDefaultNumber,
       isActive
     });
 
     // Remove business from old Twilio number (if changing)
     if (business.twilioNumber && business.twilioNumber !== twilioNumber) {
-      await TwilioNumber.updateOne(
-        { number: business.twilioNumber },
-        { $pull: { assignedBusinesses: business._id.toString() } }
-      );
+      const oldIsDefault = business.twilioNumber === defaultNumber;
+      // Only update DB if old number wasn't the default
+      if (!oldIsDefault) {
+        await TwilioNumber.updateOne(
+          { number: business.twilioNumber },
+          { $pull: { assignedBusinesses: business._id.toString() } }
+        );
+      }
     }
 
-    // Add business to new Twilio number's assignedBusinesses
-    await TwilioNumber.updateOne(
-      { number: twilioNumber },
-      { $addToSet: { assignedBusinesses: business._id.toString() } }
-    );
+    // Add business to new Twilio number's assignedBusinesses (only if not default)
+    if (!isDefaultNumber) {
+      await TwilioNumber.updateOne(
+        { number: twilioNumber },
+        { $addToSet: { assignedBusinesses: business._id.toString() } }
+      );
+    }
 
     // Update business
     business.twilioNumber = twilioNumber;
@@ -1045,12 +1131,13 @@ exports.assignTwilioNumber = async (req, res) => {
     console.log("✅ Twilio number assigned:", {
       business: business.name,
       number: twilioNumber,
+      isDefault: isDefaultNumber,
       active: business.twilioNumberActive
     });
 
     res.json({
       ok: true,
-      message: "Twilio number assigned successfully",
+      message: `Twilio number assigned successfully${isDefaultNumber ? ' (Default System Number)' : ''}`,
       business,
     });
   } catch (err) {
@@ -1062,7 +1149,6 @@ exports.assignTwilioNumber = async (req, res) => {
     });
   }
 };
-
 /**
  * Get Twilio numbers with business assignments
  * GET /admin/twilio-numbers/with-assignments
@@ -1478,7 +1564,6 @@ exports.getConsents = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
-
 /* ---------------------------------------------------
    GET ALL INBOUND TWILIO EVENTS
 --------------------------------------------------- */
@@ -1506,8 +1591,8 @@ exports.getInboundEvents = async (req, res) => {
 
     const list = items.map((e) => ({
       _id: e._id,
-      from: e.fromNumber,           // ✅ Customer phone
-      to: e.toNumber,                // ✅ Your Twilio number (added)
+      from: e.fromNumber,
+      to: e.toNumber,
       message: e.body,
       type: e.eventType,
       status: e.status || 'received',
@@ -1526,23 +1611,46 @@ exports.getInboundEvents = async (req, res) => {
 
 /* ---------------------------------------------------
    HANDLE INBOUND TWILIO WEBHOOK
+   ✅ AUTO UNSUBSCRIBE/RESUBSCRIBE based on STOP/START messages
 --------------------------------------------------- */
 exports.handleInboundTwilio = async (req, res) => {
   try {
     const { From, To, Body, MessageSid, AccountSid } = req.body;
 
-    console.log("📨 Inbound SMS received:", {
-      from: From,
-      to: To,
-      body: Body?.substring(0, 50)
-    });
+    console.log("\n" + "=".repeat(60));
+    console.log("📨 INBOUND SMS RECEIVED");
+    console.log("=".repeat(60));
+    console.log("From:", From);
+    console.log("To:", To);
+    console.log("Body:", Body);
 
-    // Normalize phone numbers (keep + prefix)
+    // Normalize phone numbers
     const fromNumber = From?.startsWith("+") ? From : `+${From}`;
     const toNumber = To?.startsWith("+") ? To : `+${To}`;
 
-    // Find which business owns this Twilio number
+    console.log("\n📞 Normalized Numbers:");
+    console.log("  From:", fromNumber);
+    console.log("  To:", toNumber);
+
+    // Determine event type
+    const bodyText = (Body || "").trim().toUpperCase();
+    let eventType = "OTHER";
+    if (bodyText.includes("STOP") || bodyText.includes("UNSUBSCRIBE")) {
+      eventType = "STOP";
+    } else if (bodyText.includes("START") || bodyText.includes("SUBSCRIBE")) {
+      eventType = "START";
+    } else if (bodyText.includes("HELP") || bodyText.includes("INFO")) {
+      eventType = "HELP";
+    }
+
+    console.log("\n📋 Event Type:", eventType);
+
+    // ============================================================
+    // STEP 1: Try to find business from TwilioNumber
+    // ============================================================
     let businessId = null;
+    
+    console.log("\n🔍 STEP 1: Looking for registered Twilio Number:", toNumber);
     const twilioNumber = await TwilioNumber.findOne({ 
       phoneNumber: toNumber,
       isActive: true 
@@ -1550,88 +1658,369 @@ exports.handleInboundTwilio = async (req, res) => {
 
     if (twilioNumber?.businessId) {
       businessId = twilioNumber.businessId;
-      console.log(`✅ Found business for ${toNumber}:`, businessId);
+      console.log("  ✅ Found registered number! Business ID:", businessId);
+    } else {
+      console.log("  ❌ Twilio number not registered");
     }
 
-    // Try to find recent checkin from this customer
+    // ============================================================
+    // STEP 2: If no business found, try to find from recent checkin
+    // ============================================================
     let checkin = null;
-    if (fromNumber) {
-      checkin = await Checkin.findOne({ 
+    if (!businessId && fromNumber) {
+      console.log("\n🔍 STEP 2: Looking for recent checkin:", fromNumber);
+      
+      checkin = await CheckinLog.findOne({ 
         phone: fromNumber 
       })
         .sort({ createdAt: -1 })
         .limit(1);
       
-      // If we found a checkin but didn't have businessId, use it from checkin
-      if (checkin && !businessId) {
+      if (!checkin) {
+        checkin = await Checkin.findOne({ 
+          phone: fromNumber 
+        })
+          .sort({ createdAt: -1 })
+          .limit(1);
+      }
+      
+      if (checkin?.businessId) {
         businessId = checkin.businessId;
-        console.log(`✅ Found business from checkin:`, businessId);
+        console.log("  ✅ Found from checkin! Business ID:", businessId);
+      } else {
+        console.log("  ❌ No checkin found");
       }
     }
 
-    // Create inbound event record
+    // ============================================================
+    // STEP 3: If still no business, try to find ANY business using this Twilio number
+    // ============================================================
+    if (!businessId && toNumber) {
+      console.log("\n🔍 STEP 3: Looking for business with twilioNumber:", toNumber);
+      
+      const business = await Business.findOne({ 
+        twilioNumber: toNumber 
+      });
+      
+      if (business) {
+        businessId = business._id;
+        console.log("  ✅ Found business! ID:", businessId, "Name:", business.name);
+        console.log("  💡 Consider running registerTwilioNumbers.js to avoid this lookup");
+      } else {
+        console.log("  ❌ No business found with this Twilio number");
+      }
+    }
+
+    console.log("\n🏢 FINAL Business ID:", businessId || "❌ NOT FOUND");
+
+    // ============================================================
+    // STEP 4: Find and update customer
+    // ============================================================
+    let customer = null;
+    let customerUpdated = false;
+    let updateMessage = "";
+
+    if (fromNumber) {
+      console.log("\n🔍 STEP 4: Looking for customer:", fromNumber);
+      
+      // Try to find customer with businessId (preferred)
+      if (businessId) {
+        customer = await Customer.findOne({
+          phone: fromNumber,
+          businessId: businessId
+        });
+        console.log(customer ? "  ✅ Found customer in business" : "  ❌ Customer not found in this business");
+      }
+      
+      // FALLBACK: If no customer found and this is STOP/START, search across ALL businesses
+      if (!customer && (eventType === "STOP" || eventType === "START")) {
+        console.log("\n  💡 FALLBACK: Searching customer across ALL businesses...");
+        
+        customer = await Customer.findOne({
+          phone: fromNumber
+        });
+        
+        if (customer) {
+          console.log("  ✅ Found customer in different business!");
+          console.log("    - Customer Business ID:", customer.businessId);
+          console.log("    - Message Received On:", toNumber);
+          console.log("    - Will update anyway (cross-business STOP/START)");
+          
+          // Update businessId for logging purposes
+          if (!businessId) {
+            businessId = customer.businessId;
+          }
+        } else {
+          console.log("  ❌ No customer found anywhere with phone:", fromNumber);
+        }
+      }
+
+      // ============================================================
+      // STEP 5: Update customer status
+      // ============================================================
+      if (customer) {
+        console.log("\n👤 CUSTOMER FOUND:");
+        console.log("  - ID:", customer._id);
+        console.log("  - Phone:", customer.phone);
+        console.log("  - Current Status:", customer.subscriberStatus);
+        console.log("  - Points:", customer.points);
+        console.log("  - Business ID:", customer.businessId);
+
+        // Handle STOP - Set to UNSUBSCRIBED instead of blocked
+        if (eventType === "STOP") {
+          console.log("\n🚫 Processing STOP command...");
+          
+          if (customer.subscriberStatus !== "unsubscribed") {
+            const oldStatus = customer.subscriberStatus;
+            customer.subscriberStatus = "unsubscribed";
+            customer.blockDate = new Date();
+            customer.blockReason = "Customer sent STOP message";
+            await customer.save();
+            
+            customerUpdated = true;
+            updateMessage = `Status: ${oldStatus} → unsubscribed`;
+            console.log("  ✅ Customer UNSUBSCRIBED!");
+            console.log("    - Old Status:", oldStatus);
+            console.log("    - New Status:", customer.subscriberStatus);
+            console.log("    - Block Reason:", customer.blockReason);
+          } else {
+            console.log("  ⚠️ Already unsubscribed - no change");
+            updateMessage = "Already unsubscribed";
+          }
+        }
+        
+        // Handle START - Reactivate from any inactive status
+        else if (eventType === "START") {
+          console.log("\n✅ Processing START command...");
+          
+          if (customer.subscriberStatus === "blocked" || 
+              customer.subscriberStatus === "opted-out" || 
+              customer.subscriberStatus === "unsubscribed") {
+            const previousStatus = customer.subscriberStatus;
+            const previousPoints = customer.points;
+            
+            customer.subscriberStatus = "active";
+            customer.unblockDate = new Date();
+            customer.points = 0;
+            customer.blockReason = undefined;
+            await customer.save();
+            
+            customerUpdated = true;
+            updateMessage = `Status: ${previousStatus} → active, Points: ${previousPoints} → 0`;
+            console.log("  ✅ Customer REACTIVATED!");
+            console.log("    - Old Status:", previousStatus);
+            console.log("    - New Status:", customer.subscriberStatus);
+            console.log("    - Points Reset: Yes");
+          } else {
+            console.log("  ⚠️ Already active - no change");
+            updateMessage = "Already active";
+          }
+        }
+      } else {
+        console.log("\n❌ CUSTOMER NOT FOUND - Cannot update status");
+        console.log("  Possible reasons:");
+        console.log("  1. Customer never checked in");
+        console.log("  2. Phone number doesn't match database format");
+        console.log("  3. Customer was deleted");
+      }
+    }
+
+    // ============================================================
+    // STEP 6: Log the inbound event
+    // ============================================================
     const inbound = await InboundEvent.create({
       checkinId: checkin?._id || null,
       businessId: businessId || null,
       fromNumber,
-      toNumber,  // ✅ Now saving the recipient number
+      toNumber,
       body: Body,
-      eventType: "INBOUND_SMS",
+      eventType: eventType,
       messageSid: MessageSid,
       accountSid: AccountSid,
       status: 'received',
       raw: req.body,
     });
 
-    console.log("✅ Inbound event saved:", {
-      id: inbound._id,
-      from: fromNumber,
-      to: toNumber,
-      business: businessId
-    });
+    console.log("\n💾 Inbound Event Saved:");
+    console.log("  - Event ID:", inbound._id);
+    console.log("  - Event Type:", eventType);
+    console.log("  - Customer Updated:", customerUpdated);
+    if (updateMessage) {
+      console.log("  - Update Details:", updateMessage);
+    }
 
-    // Send Twilio response (empty TwiML = no auto-reply)
-    res.status(200).type('text/xml').send("<Response></Response>");
+    // ============================================================
+    // STEP 7: Send Twilio response
+    // ============================================================
+    const twiml = new twilio.twiml.MessagingResponse();
+
+    if (eventType === "STOP") {
+      twiml.message("You have been unsubscribed. Reply START to rejoin.");
+      console.log("\n📤 Sending: STOP confirmation");
+    } else if (eventType === "START") {
+      twiml.message("Welcome back! You are now subscribed again. Your points have been reset.");
+      console.log("\n📤 Sending: START confirmation");
+    } else if (eventType === "HELP") {
+      twiml.message("Reply START to subscribe or STOP to unsubscribe.");
+      console.log("\n📤 Sending: HELP message");
+    } else {
+      console.log("\n📤 Sending: Empty response (no auto-reply)");
+    }
+
+    console.log("=".repeat(60));
+    console.log("✅ WEBHOOK COMPLETE");
+    console.log("=".repeat(60) + "\n");
+
+    res.status(200).type('text/xml').send(twiml.toString());
     
   } catch (err) {
-    console.error("❌ Failed to handle inbound Twilio event:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
+    console.error("\n" + "=".repeat(60));
+    console.error("❌ WEBHOOK ERROR:");
+    console.error("=".repeat(60));
+    console.error("Error:", err.message);
+    console.error("Stack:", err.stack);
+    console.error("=".repeat(60) + "\n");
+    
+    res.status(500).type('text/xml').send("<Response></Response>");
   }
 };
-
 //Rewards
 
 
+// controllers/adminController.js
+// Add/Update this function to allow admins to set cooldown hours
+
+/**
+ * Update business reward settings including cooldown
+ * PUT /admin/business/:id/reward-settings
+ */
 
 exports.updateRewardSettings = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      rewardThreshold,
+      rewardThreshold,        // ✅ Check-ins needed for reward
+      checkinCooldownHours,   // ✅ Hours between check-ins
       maxActiveRewards,
-      checkinCooldownHours,
-      welcomeMessage,
-      rewardExpiryDays
+      welcomeMessage
     } = req.body;
 
     const business = await Business.findById(id);
-    if (!business) return res.status(404).json({ error: "Business not found" });
+    if (!business) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: "Business not found" 
+      });
+    }
 
-    if (rewardThreshold !== undefined) business.rewardThreshold = rewardThreshold;
-    if (maxActiveRewards !== undefined) business.maxActiveRewards = maxActiveRewards;
-    if (checkinCooldownHours !== undefined) business.checkinCooldownHours = checkinCooldownHours;
-    if (welcomeMessage !== undefined) business.welcomeMessage = welcomeMessage;
-    if (rewardExpiryDays !== undefined) business.rewardExpiryDays = rewardExpiryDays;
+    // ✅ Check permissions
+    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
+      return res.status(403).json({ 
+        ok: false, 
+        error: "Access denied" 
+      });
+    }
+
+    // ✅ Update global reward threshold
+    if (rewardThreshold !== undefined) {
+      if (rewardThreshold < 1 || rewardThreshold > 100) {
+        return res.status(400).json({
+          ok: false,
+          error: "Reward threshold must be between 1 and 100 check-ins"
+        });
+      }
+      business.rewardThreshold = rewardThreshold;
+      console.log(`✅ Reward threshold updated to ${rewardThreshold} check-ins`);
+    }
+
+    // ✅ Update cooldown hours
+    if (checkinCooldownHours !== undefined) {
+      if (checkinCooldownHours < 0.5 || checkinCooldownHours > 168) {
+        return res.status(400).json({
+          ok: false,
+          error: "Cooldown must be between 0.5 hours (30 min) and 168 hours (7 days)"
+        });
+      }
+      business.checkinCooldownHours = checkinCooldownHours;
+      console.log(`✅ Cooldown updated to ${checkinCooldownHours} hours`);
+    }
+
+    // ✅ Update other settings
+    if (maxActiveRewards !== undefined) {
+      business.maxActiveRewards = maxActiveRewards;
+    }
+    
+    if (welcomeMessage !== undefined) {
+      business.welcomeMessage = welcomeMessage;
+    }
+
+    // ✅ Note: rewardExpiryDays is always 15 (immutable)
 
     await business.save();
-    res.json({ ok: true, business });
+
+    console.log(`✅ Program settings updated for ${business.name}`);
+
+    res.json({ 
+      ok: true, 
+      business,
+      message: "Program settings updated successfully"
+    });
   } catch (err) {
-    //console.error("❌ Failed to update reward settings:", err);
-    res.status(500).json({ error: "server error" });
+    console.error("❌ Failed to update program settings:", err);
+    res.status(500).json({ 
+      ok: false, 
+      error: "Server error" 
+    });
   }
 };
+/**
+ * Get business settings (for admin panel)
+ * GET /admin/business/:id
+ */
+exports.getBusinessSettings = async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    const business = await Business.findById(id);
+    if (!business) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: "Business not found" 
+      });
+    }
 
+    // ✅ Check permissions
+    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
+      return res.status(403).json({ 
+        ok: false, 
+        error: "Access denied" 
+      });
+    }
+
+    res.json({
+      ok: true,
+      business: {
+        id: business._id,
+        name: business.name,
+        slug: business.slug,
+        rewardThreshold: business.rewardThreshold || 10,
+        checkinCooldownHours: business.checkinCooldownHours || 24,
+        rewardExpiryDays: 15, // Fixed
+        maxActiveRewards: business.maxActiveRewards || 15,
+        welcomeMessage: business.welcomeMessage,
+        twilioNumber: business.twilioNumber,
+        twilioNumberActive: business.twilioNumberActive,
+        ageGate: business.ageGate
+      }
+    });
+  } catch (err) {
+    console.error("❌ Failed to fetch business settings:", err);
+    res.status(500).json({ 
+      ok: false, 
+      error: "Server error" 
+    });
+  }
+};
 // ✅ REDEEM A REWARD
 exports.redeemReward = async (req, res) => {
   try {
@@ -2176,121 +2565,83 @@ exports.getBusinessCheckins = async (req, res) => {
   }
 };
 
-
 exports.redeemReward = async (req, res) => {
   try {
-    const { businessName, phone, code } = req.body;
-
-    // Validate required fields
-    if (!businessName || !phone || !code) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: 'businessName, phone, and code are required' 
-      });
-    }
-
-    // Normalize phone number
-    let normalizedPhone = phone.trim().replace(/\D/g, "");
-    if (!normalizedPhone.startsWith("1")) normalizedPhone = "1" + normalizedPhone;
-    normalizedPhone = "+" + normalizedPhone;
-
-    console.log("🔍 Looking for reward:", { businessName, phone: normalizedPhone, code });
-
-    // Find the business by name
-    const business = await Business.findOne({ name: businessName });
+    const { id } = req.params; // ✅ Changed from rewardId to id
     
-    if (!business) {
-      return res.status(404).json({ 
-        ok: false, 
-        error: 'Business not found' 
-      });
+    console.log('🎁 Redeeming reward:', id); // ✅ Changed rewardId to id
+
+    if (!id) { // ✅ Changed rewardId to id
+      return res.status(400).json({ ok: false, error: "Reward ID is required" });
     }
 
-    // Find the reward template by code/name
-    const rewardTemplate = await Reward.findOne({ 
-      businessId: business._id,
-      phone: { $exists: false }, // Template only
-      $or: [
-        { code: code },
-        { name: { $regex: new RegExp(code, 'i') } } // Fuzzy match
-      ]
-    });
-
-    if (!rewardTemplate) {
-      return res.status(404).json({ 
-        ok: false, 
-        error: 'Reward template not found' 
-      });
-    }
-
-    // Find the reward history entry
-    const rewardHistory = await RewardHistory.findOne({
-      businessId: business._id,
-      phone: normalizedPhone,
-      rewardId: rewardTemplate._id,
-      status: { $in: ['Active', 'Expired'] } // Can redeem Active or Expired
-    });
-
-    if (!rewardHistory) {
-      return res.status(404).json({ 
-        ok: false, 
-        error: 'No active reward found for this customer' 
-      });
+    // Find the reward
+    const reward = await Reward.findById(id); // ✅ Changed rewardId to id
+    
+    if (!reward) {
+      return res.status(404).json({ ok: false, error: "Reward not found" });
     }
 
     // Check if already redeemed
-    if (rewardHistory.status === 'Redeemed') {
-      return res.status(400).json({ 
-        ok: false, 
-        error: 'Reward already redeemed' 
-      });
+    if (reward.redeemed) {
+      return res.status(400).json({ ok: false, error: "Reward already redeemed" });
     }
 
-    // Check if expired (optional - you can allow redeeming expired ones)
-    if (rewardHistory.expiresAt && new Date(rewardHistory.expiresAt) < new Date()) {
-      // Update to expired if not already
-      if (rewardHistory.status !== 'Expired') {
-        rewardHistory.status = 'Expired';
+    // Check if expired
+    if (reward.expiresAt && new Date(reward.expiresAt) < new Date()) {
+      return res.status(400).json({ ok: false, error: "Reward has expired" });
+    }
+
+    // Check access permissions
+    if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
+      if (reward.businessId.toString() !== req.user.businessId.toString()) {
+        return res.status(403).json({ ok: false, error: "Access denied" });
       }
-      
-      // You can choose to allow or block expired redemption
-      // Uncomment below to block:
-      // await rewardHistory.save();
-      // return res.status(400).json({ 
-      //   ok: false, 
-      //   error: 'Reward has expired' 
-      // });
     }
 
-    // Update status to Redeemed
-    rewardHistory.status = 'Redeemed';
-    rewardHistory.redeemedAt = new Date();
-    await rewardHistory.save();
-
-    console.log('✅ Reward redeemed:', {
-      business: businessName,
-      phone: normalizedPhone,
-      reward: rewardTemplate.name
+    // ✅ Find the customer and reset their check-ins to zero
+    const customer = await Customer.findOne({ 
+      phone: reward.phone, 
+      businessId: reward.businessId 
     });
 
-    res.json({
-      ok: true,
-      message: 'Reward redeemed successfully',
-      data: {
-        businessName: business.name,
-        phone: normalizedPhone,
-        rewardName: rewardTemplate.name,
-        status: rewardHistory.status,
-        redeemedAt: rewardHistory.redeemedAt,
-      },
+    if (customer) {
+      customer.totalCheckins = 0;
+      await customer.save();
+      console.log(`🔄 Customer check-ins reset to 0 for phone: ${reward.phone}`);
+    }
+
+    // Mark as redeemed
+    reward.redeemed = true;
+    reward.redeemedAt = new Date();
+    reward.redeemedBy = req.user.id;
+    
+    await reward.save();
+
+    // Update reward history
+    await RewardHistory.updateOne(
+      { rewardId: reward._id },
+      { 
+        status: "Redeemed",
+        redeemedAt: new Date(),
+        redeemedBy: req.user.id
+      }
+    );
+
+    console.log(`✅ Reward redeemed: ${reward.code}`);
+
+    res.json({ 
+      ok: true, 
+      message: "Reward redeemed successfully", 
+      reward,
+      customer: customer ? {
+        phone: customer.phone,
+        totalCheckins: customer.totalCheckins
+      } : null
     });
 
-  } catch (error) {
-    console.error('❌ Redeem error:', error);
-
-    res.status(500).json({ 
-      ok: false, 
-      error: 'Server error while redeeming reward' 
-    });
+  } catch (err) {
+    console.error('❌ Redeem Error:', err);
+    res.status(500).json({ ok: false, error: err.message });
   }
 };

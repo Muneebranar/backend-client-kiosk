@@ -52,6 +52,8 @@ const importHistorySchema = new mongoose.Schema({
     created: { type: Number, default: 0 },
     updated: { type: Number, default: 0 },
     skipped: { type: Number, default: 0 },
+    welcomesSent: { type: Number, default: 0 }, // ✅ Add this
+    welcomesFailed: { type: Number, default: 0 }, // ✅ Add this
     errors: [
       {
         row: Number,

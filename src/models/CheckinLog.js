@@ -1,62 +1,55 @@
-// models/CheckinLog.js
-// Updated to include customerId for proper querying
+const mongoose = require("mongoose");
 
-const mongoose = require('mongoose');
-const Schema = mongoose.Schema;
-
-const CheckinLogSchema = new Schema({
-  businessId: { 
-    type: Schema.Types.ObjectId, 
-    ref: 'Business', 
-    required: true,
-    index: true
+const checkinLogSchema = new mongoose.Schema(
+  {
+    businessId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Business",
+      required: true,
+    },
+    customerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Customer",
+      required: false, // Optional for first-time users
+    },
+    phone: {
+      type: String,
+      required: true,
+    },
+    countryCode: {
+      type: String,
+      default: "+1",
+    },
+    status: {
+      type: String,
+      enum: ["kiosk", "checkin", "checkout", "cooldown"], // ✅ Added 'cooldown'
+      required: true,
+    },
+    pointsAwarded: {
+      type: Number,
+      default: 0,
+    },
+    metadata: {
+      type: Object,
+      default: {},
+    },
+    ipAddress: {
+      type: String,
+      required: false,
+    },
+    userAgent: {
+      type: String,
+      required: false,
+    },
   },
-  
-  customerId: {
-    type: Schema.Types.ObjectId,
-    ref: 'Customer',
-    index: true // ✅ ADDED: For querying by customer
-  },
-  
-  phone: { 
-    type: String, 
-    required: true,
-    index: true
-  },
-  
-  countryCode: { 
-    type: String, 
-    default: '+1' 
-  },
-  
-  status: {
-    type: String,
-    enum: ['manual', 'kiosk', 'api'],
-    default: 'kiosk'
-  },
-  
-  addedBy: { 
-    type: Schema.Types.ObjectId, 
-    ref: 'AdminUser' 
-  },
-  
-  pointsAwarded: { 
-    type: Number, 
-    default: 1 
-  },
-
-  metadata: {
-    type: mongoose.Schema.Types.Mixed,
-    default: {}
+  {
+    timestamps: true, // Adds createdAt and updatedAt
   }
-}, { 
-  timestamps: true 
-});
+);
 
-// ✅ Add compound indexes for efficient queries
-CheckinLogSchema.index({ businessId: 1, createdAt: -1 });
-CheckinLogSchema.index({ phone: 1 });
-CheckinLogSchema.index({ customerId: 1, createdAt: -1 }); // ✅ ADDED
-CheckinLogSchema.index({ businessId: 1, customerId: 1 }); // ✅ ADDED
+// ✅ Index for faster queries
+checkinLogSchema.index({ businessId: 1, createdAt: -1 });
+checkinLogSchema.index({ customerId: 1, createdAt: -1 });
+checkinLogSchema.index({ phone: 1, businessId: 1 });
 
-module.exports = mongoose.model('CheckinLog', CheckinLogSchema);
+module.exports = mongoose.model("CheckinLog", checkinLogSchema);

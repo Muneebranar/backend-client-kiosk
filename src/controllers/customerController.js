@@ -1,10 +1,11 @@
 // controllers/customerController.js
+// ✅ FIXED: Added marketing consent management
 const mongoose = require('mongoose');
 const Customer = require("../models/Customer");
 const Checkin = require("../models/Checkin");
 const RewardHistory = require("../models/rewardHistory");
 const PointsLedger = require("../models/PointsLedger");
-const CheckinLog = require('../models/CheckinLog'); // Add this line
+const CheckinLog = require('../models/CheckinLog');
 
 /**
  * Search and filter customers
@@ -20,7 +21,7 @@ exports.searchCustomers = async (req, res) => {
     console.log('🔍 Search Customers:', { q, status, businessId, userRole });
 
     // Build query
-    let query = {};
+    let query = { deleted: { $ne: true } };
 
     // Business admin can only see their own customers
     if (userRole === 'admin') {
@@ -47,14 +48,13 @@ exports.searchCustomers = async (req, res) => {
       const searchRegex = new RegExp(q.replace(/\D/g, ''), 'i');
       query.$or = [
         { phone: searchRegex },
-        { firstName: new RegExp(q, 'i') },
-        { lastName: new RegExp(q, 'i') }
+        { 'metadata.name': new RegExp(q, 'i') }
       ];
     }
 
     // Filter by status
     if (status) {
-      query.subscriptionStatus = status;
+      query.subscriberStatus = status;
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -90,6 +90,7 @@ exports.searchCustomers = async (req, res) => {
     });
   }
 };
+
 /**
  * Get single customer details with history
  * GET /admin/customers/:id
@@ -112,7 +113,10 @@ exports.getCustomerDetails = async (req, res) => {
     const userBusinessId = req.user.businessId;
 
     // Build query based on role
-    let query = { _id: id };
+    let query = { 
+      _id: id,
+      deleted: { $ne: true }
+    };
     
     // Business admin can only see their own customers
     if (userRole === 'admin') {
@@ -146,11 +150,9 @@ exports.getCustomerDetails = async (req, res) => {
       .lean();
 
     // Get total check-ins count
-    const totalCheckins = await CheckinLog.countDocuments({
-      customerId: customer._id
-    });
+    const totalCheckins = customer.totalCheckins || 0;
 
-    // ⚠️ CRITICAL: Get rewards for this customer
+    // Get rewards for this customer
     const rewardHistoryRecords = await RewardHistory.find({
       customerId: customer._id
     })
@@ -163,7 +165,7 @@ exports.getCustomerDetails = async (req, res) => {
 
     console.log(`📊 Customer ${customer.phone}:`);
     console.log(`   - Total checkins: ${totalCheckins}`);
-    console.log(`   - Total points: ${customer.points}`);
+    console.log(`   - Marketing consent: ${customer.marketingConsent}`);
     console.log(`   - Rewards found: ${rewardHistoryRecords.length}`);
 
     // Format rewards for frontend
@@ -213,13 +215,6 @@ exports.getCustomers = async (req, res) => {
       status,
       page,
       limit
-    });
-
-    console.log('👤 User:', {
-      id: req.user.id,
-      role: req.user.role,
-      name: req.user.name,
-      email: req.user.email
     });
 
     const query = { deleted: { $ne: true } };
@@ -277,6 +272,121 @@ exports.getCustomers = async (req, res) => {
 };
 
 /**
+ * ✅ NEW: Enable marketing consent for a customer
+ * PUT /admin/customers/:id/marketing-consent
+ */
+exports.enableMarketingConsent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { marketingConsent } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Invalid customer ID format'
+      });
+    }
+
+    const customer = await Customer.findOne({
+      _id: id,
+      deleted: { $ne: true }
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Customer not found'
+      });
+    }
+
+    // Check access
+    if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
+      if (customer.businessId.toString() !== req.user.businessId.toString()) {
+        return res.status(403).json({
+          ok: false,
+          error: 'Access denied'
+        });
+      }
+    }
+
+    // Update marketing consent
+    customer.marketingConsent = marketingConsent;
+    customer.marketingConsentDate = marketingConsent ? new Date() : null;
+    
+    await customer.save();
+
+    console.log(`✅ Marketing consent ${marketingConsent ? 'enabled' : 'disabled'} for:`, customer.phone);
+
+    res.json({
+      ok: true,
+      customer,
+      message: `Marketing consent ${marketingConsent ? 'enabled' : 'disabled'}`
+    });
+  } catch (err) {
+    console.error('❌ Update Marketing Consent Error:', err);
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+};
+
+/**
+ * ✅ NEW: Bulk enable marketing consent
+ * POST /admin/customers/bulk/marketing-consent
+ */
+exports.bulkEnableMarketingConsent = async (req, res) => {
+  try {
+    const { businessId, enable = true } = req.body;
+
+    if (!businessId || !mongoose.Types.ObjectId.isValid(businessId)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Valid business ID is required'
+      });
+    }
+
+    // Check access
+    if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
+      if (businessId !== req.user.businessId.toString()) {
+        return res.status(403).json({
+          ok: false,
+          error: 'Access denied'
+        });
+      }
+    }
+
+    const result = await Customer.updateMany(
+      {
+        businessId: businessId,
+        subscriberStatus: 'active',
+        deleted: { $ne: true }
+      },
+      {
+        $set: {
+          marketingConsent: enable,
+          marketingConsentDate: enable ? new Date() : null
+        }
+      }
+    );
+
+    console.log(`✅ Bulk marketing consent update: ${result.modifiedCount} customers affected`);
+
+    res.json({
+      ok: true,
+      modifiedCount: result.modifiedCount,
+      message: `Marketing consent ${enable ? 'enabled' : 'disabled'} for ${result.modifiedCount} customers`
+    });
+  } catch (err) {
+    console.error('❌ Bulk Update Error:', err);
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+};
+
+/**
  * Manually add check-in for customer
  * POST /admin/customers/:id/checkin
  */
@@ -315,14 +425,17 @@ exports.addManualCheckin = async (req, res) => {
       }
     }
 
-    // Add points
-    customer.points += parseInt(points);
+    // Add check-in
     customer.totalCheckins += 1;
     customer.lastCheckinAt = new Date();
+    
+    if (!customer.firstCheckinAt) {
+      customer.firstCheckinAt = new Date();
+    }
 
     await customer.save();
 
-    console.log('✅ Manual check-in added:', customer.phone, '+', points, 'points');
+    console.log('✅ Manual check-in added:', customer.phone, 'Total:', customer.totalCheckins);
 
     res.json({
       ok: true,
@@ -346,11 +459,11 @@ exports.updateSubscriberStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
     
-     console.log('📝 Received status update request:', {
+    console.log('📝 Received status update request:', {
       customerId: id,
       body: req.body,
       status: status
-    }); // 
+    });
 
     // Validate ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -360,7 +473,7 @@ exports.updateSubscriberStatus = async (req, res) => {
       });
     }
 
-    if (!['active', 'invalid', 'blocked', 'unsubscribed'].includes(status)) {
+    if (!['active', 'invalid', 'blocked', 'unsubscribed', 'opted-out'].includes(status)) {
       return res.status(400).json({
         ok: false,
         error: 'Invalid status'
@@ -390,6 +503,12 @@ exports.updateSubscriberStatus = async (req, res) => {
     }
 
     customer.subscriberStatus = status;
+    
+    // Auto-disable marketing consent if unsubscribed/blocked
+    if (['unsubscribed', 'blocked', 'invalid'].includes(status)) {
+      customer.marketingConsent = false;
+    }
+    
     await customer.save();
 
     console.log('✅ Subscriber status updated:', customer.phone, '->', status);
@@ -447,8 +566,12 @@ exports.updateCustomer = async (req, res) => {
     }
 
     // Update allowed fields
-    if (updates.points !== undefined) customer.points = updates.points;
+    if (updates.totalCheckins !== undefined) customer.totalCheckins = updates.totalCheckins;
     if (updates.subscriberStatus) customer.subscriberStatus = updates.subscriberStatus;
+    if (updates.marketingConsent !== undefined) {
+      customer.marketingConsent = updates.marketingConsent;
+      customer.marketingConsentDate = updates.marketingConsent ? new Date() : null;
+    }
     if (updates.metadata) {
       customer.metadata = { ...customer.metadata, ...updates.metadata };
     }
@@ -469,6 +592,7 @@ exports.updateCustomer = async (req, res) => {
     });
   }
 };
+
 /**
  * Get a customer by reward code
  * GET /admin/customers/by-code/:code
@@ -489,8 +613,26 @@ exports.getCustomerByRewardCode = async (req, res) => {
     const userRole = req.user.role;
     const userBusinessId = req.user.businessId;
 
-    // Build query
-    let query = { rewardCode: code.toUpperCase() };
+    // Find reward first
+    const Reward = require('../models/Reward');
+    const reward = await Reward.findOne({ 
+      code: code.toUpperCase(),
+      redeemed: false
+    }).lean();
+
+    if (!reward) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Reward not found or already redeemed'
+      });
+    }
+
+    // Build customer query
+    let query = { 
+      phone: reward.phone,
+      businessId: reward.businessId,
+      deleted: { $ne: true }
+    };
 
     // Business admin can only see their own customers
     if (userRole === 'admin') {
@@ -500,7 +642,12 @@ exports.getCustomerByRewardCode = async (req, res) => {
           error: 'No business assigned to your account'
         });
       }
-      query.businessId = userBusinessId;
+      if (reward.businessId.toString() !== userBusinessId) {
+        return res.status(403).json({
+          ok: false,
+          error: 'Access denied'
+        });
+      }
     }
 
     const customer = await Customer.findOne(query)
@@ -510,13 +657,14 @@ exports.getCustomerByRewardCode = async (req, res) => {
     if (!customer) {
       return res.status(404).json({
         ok: false,
-        error: 'Customer not found with this reward code'
+        error: 'Customer not found'
       });
     }
 
     res.json({
       ok: true,
-      customer
+      customer,
+      reward
     });
 
   } catch (error) {
@@ -528,8 +676,6 @@ exports.getCustomerByRewardCode = async (req, res) => {
     });
   }
 };
-
-
 
 exports.deleteCustomer = async (req, res) => {
   try {
@@ -584,6 +730,7 @@ exports.deleteCustomer = async (req, res) => {
     });
   }
 };
+
 /**
  * Export customer data
  * GET /admin/customers/export?businessId=xxx&format=csv
@@ -617,15 +764,14 @@ exports.exportCustomers = async (req, res) => {
 
     // CSV export
     const csv = [
-      "Phone,Business,Points,Total Check-ins,Status,Consent,Age Verified,First Visit,Last Visit",
+      "Phone,Business,Total Check-ins,Status,Marketing Consent,Age Verified,First Visit,Last Visit",
       ...customers.map((c) =>
         [
           c.phone,
           c.businessId?.name || "",
-          c.points || 0,
           c.totalCheckins || 0,
           c.subscriberStatus,
-          c.consentGiven ? "Yes" : "No",
+          c.marketingConsent ? "Yes" : "No",
           c.ageVerified ? "Yes" : "No",
           c.firstCheckinAt ? new Date(c.firstCheckinAt).toISOString() : "",
           c.lastCheckinAt ? new Date(c.lastCheckinAt).toISOString() : "",

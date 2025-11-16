@@ -5,6 +5,8 @@ const rewardController = require("../controllers/rewardController");
 const csvImportController = require("../controllers/csvImportController");
 const customerController = require("../controllers/customerController");
 const kioskController = require("../controllers/kioskController");
+const campaignController = require("../controllers/campaignController");
+const winBackController = require("../controllers/winBackController");
 const { protect } = require("../middleware/authMiddleware");
 const { upload, uploadCSV } = require("../config/mutler");
 const debugAuth = require('../middleware/authDebug');
@@ -19,11 +21,38 @@ console.log("✅ csvImportController:", Object.keys(csvImportController));
 // PUBLIC ROUTES (BEFORE protect middleware)
 // ========================================
 router.post("/login", admin.login);
+router.post("/campaigns/webhook/status", campaignController.handleDeliveryStatus);
 
 // ========================================
 // PROTECTED ROUTES (AFTER protect middleware)
 // ========================================
 router.use(protect);
+
+// ========================================
+// ✅ PROFILE ROUTE
+// ========================================
+router.get("/profile", async (req, res) => {
+  try {
+    console.log('📋 Fetching profile for user:', req.user.id);
+    
+    res.json({
+      ok: true,
+      user: {
+        id: req.user.id,
+        email: req.user.email,
+        role: req.user.role,
+        businessId: req.user.businessId,
+        name: req.user.name
+      }
+    });
+  } catch (error) {
+    console.error('❌ Profile fetch error:', error);
+    res.status(500).json({
+      ok: false,
+      error: 'Failed to fetch profile'
+    });
+  }
+});
 
 // --- USERS ---
 router.get("/users", admin.getAllUsers);
@@ -86,17 +115,27 @@ router.get("/customers/import-history", csvImportController.getImportHistory);
 router.get("/customers/import/:id", csvImportController.getImportStatus);
 router.post("/customers/import", uploadCSV.single("csv"), csvImportController.importCustomersCSV || csvImportController.importCustomers);
 
-// --- CUSTOMER MANAGEMENT ---
-// CRITICAL: Put specific routes BEFORE parameterized routes to avoid conflicts
-router.get("/customers/by-code/:code", customerController.getCustomerByRewardCode);
+// ========================================
+// ✅ CUSTOMER MANAGEMENT (UPDATED)
+// ========================================
 
-// General customer routes (these come AFTER specific routes)
+// ✅ NEW: Marketing consent management (MUST be before :id routes)
+router.post("/customers/bulk/marketing-consent", customerController.bulkEnableMarketingConsent);
+router.put("/customers/:id/marketing-consent", customerController.enableMarketingConsent);
+
+// Customer search and details
+router.get("/customers/by-code/:code", customerController.getCustomerByRewardCode);
 router.get("/customers", customerController.searchCustomers);
 router.get("/customers/:id", customerController.getCustomerDetails);
+
+// Customer actions
 router.post("/customers/:id/checkin", customerController.addManualCheckin);
 router.put("/customers/:id/status", customerController.updateSubscriberStatus);
 router.put("/customers/:id", customerController.updateCustomer);
 router.delete("/customers/:id", customerController.deleteCustomer);
+
+// Customer export
+router.get("/customers/export", customerController.exportCustomers);
 
 // Customer blocking routes
 router.post("/customers/:id/block", kioskController.blockCustomerById);
@@ -105,5 +144,21 @@ router.post("/customers/:id/unblock", kioskController.unblockCustomerById);
 // Legacy kiosk routes (by phone)
 router.post("/admin/unblock-customer", kioskController.unblockCustomer);
 router.post("/admin/block-customer", kioskController.blockCustomer);
+
+// ========================================
+// CAMPAIGN MANAGEMENT ROUTES
+// ========================================
+router.get("/campaigns", campaignController.getCampaigns);
+router.post("/campaigns", campaignController.createCampaign);
+router.get("/campaigns/:id", campaignController.getCampaignDetails);
+router.post("/campaigns/:id/send", campaignController.sendCampaign);
+router.delete("/campaigns/:id", campaignController.deleteCampaign);
+
+// --- WIN-BACK AUTOMATION ---
+router.get("/win-back/:businessId", winBackController.getWinBackSettings);
+router.put("/win-back/:businessId", winBackController.updateWinBackSettings);
+router.get("/win-back/:businessId/preview", winBackController.previewWinBackAudience);
+router.post("/win-back/:businessId/trigger", winBackController.triggerWinBack);
+router.get("/win-back/:businessId/stats", winBackController.getWinBackStats);
 
 module.exports = router;

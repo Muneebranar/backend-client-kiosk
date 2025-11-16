@@ -82,8 +82,67 @@ async function sendSms(to, from, message) {
   }
 }
 
+/**
+ * 📨 Send SMS (Standardized interface for CSV imports and bulk operations)
+ * This function is specifically designed for the import system
+ * 
+ * @param {Object} params - SMS parameters
+ * @param {string} params.to - Recipient phone number
+ * @param {string} params.body - Message content
+ * @param {string} params.businessId - Business ID (optional, for logging/tracking)
+ * @returns {Promise<Object>} Result object with status
+ */
+async function sendSMS({ to, body, businessId }) {
+  const from = process.env.DEFAULT_TWILIO_NUMBER || process.env.TWILIO_PHONE_NUMBER;
+  
+  if (!from) {
+    throw new Error("No Twilio 'from' number configured!");
+  }
+
+  console.log("📲 Sending SMS via sendSMS:", { 
+    from, 
+    to, 
+    businessId,
+    bodyPreview: body.substring(0, 50) + '...' 
+  });
+
+  try {
+    const result = await client.messages.create({
+      to,
+      from,
+      body,
+    });
+    
+    console.log("✅ SMS sent successfully:", result.sid);
+    
+    return { 
+      sid: result.sid, 
+      from, 
+      to, 
+      status: "sent",
+      success: true 
+    };
+  } catch (err) {
+    // Handle Twilio-specific errors
+    if (err.code === 21610) {
+      console.log("❌ User unsubscribed (STOP). Skipping SMS:", to);
+      return { status: "unsubscribed", to, success: false };
+    }
+    
+    if (err.code === 21211 || err.message?.includes("Invalid 'To' Phone Number")) {
+      console.log("❌ Invalid or non-SMS phone number:", to);
+      return { status: "invalid_number", to, success: false };
+    }
+
+    // For other errors, log and throw so the import code can handle it
+    console.error("❌ Failed to send SMS to", to, ":", err.message);
+    throw new Error(`Twilio SMS failed: ${err.message}`);
+  }
+}
+
 module.exports = {
   client,
   sendComplianceSms,
   sendSms,
+  sendSMS, // ✅ Export the new standardized function
 };
