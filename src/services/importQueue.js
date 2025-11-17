@@ -17,28 +17,30 @@ const DEFAULT_CHECKINS = 3;
 const WELCOME_BATCH_SIZE = 50;
 const WELCOME_DELAY = 500;
 
-// 🔧 FIXED: Redis Configuration - Removed TLS Issue
+// 🔧 FIXED: Redis Configuration with Better TLS Handling
 const getRedisConfig = () => {
   logger.debug('Checking Redis configuration...');
   logger.debug('REDIS_HOST:', process.env.REDIS_HOST);
   logger.debug('REDIS_PORT:', process.env.REDIS_PORT);
   logger.debug('REDIS_PASSWORD:', process.env.REDIS_PASSWORD ? '***SET***' : 'NOT SET');
+  logger.debug('REDIS_USERNAME:', process.env.REDIS_USERNAME || 'NOT SET');
   logger.debug('REDIS_URL:', process.env.REDIS_URL ? '***SET***' : 'NOT SET');
+  logger.debug('REDIS_TLS:', process.env.REDIS_TLS || 'NOT SET');
   
-  // Check if using standard Redis connection (REDIS_URL or REDIS_HOST)
+  // Priority 1: Use REDIS_URL if provided
   if (process.env.REDIS_URL) {
     logger.redis('Using Redis from REDIS_URL');
     return process.env.REDIS_URL;
   }
   
+  // Priority 2: Use host/port configuration
   if (process.env.REDIS_HOST && process.env.REDIS_PORT) {
     logger.redis('Using Redis from REDIS_HOST/PORT');
     
     const config = {
       host: process.env.REDIS_HOST,
       port: parseInt(process.env.REDIS_PORT),
-      password: process.env.REDIS_PASSWORD || undefined,
-      maxRetriesPerRequest: null, // Important for Bull
+      maxRetriesPerRequest: null,
       enableReadyCheck: false,
       connectTimeout: 30000,
       retryStrategy: (times) => {
@@ -52,9 +54,28 @@ const getRedisConfig = () => {
       }
     };
 
-    // 🔧 FIX: Only enable TLS if explicitly requested via REDIS_TLS=true
-    // Don't auto-enable TLS based on hostname
-    if (process.env.REDIS_TLS === 'true') {
+    // Handle authentication
+    if (process.env.REDIS_PASSWORD) {
+      // Redis 6.0+ supports username + password
+      if (process.env.REDIS_USERNAME) {
+        logger.redis('Using username + password authentication');
+        config.username = process.env.REDIS_USERNAME;
+        config.password = process.env.REDIS_PASSWORD;
+      } else {
+        // Older Redis versions use only password
+        logger.redis('Using password-only authentication');
+        config.password = process.env.REDIS_PASSWORD;
+      }
+    } else {
+      logger.redis('No authentication configured');
+    }
+
+    // 🔧 ROBUST TLS HANDLING - Check multiple conditions
+    const tlsEnabled = process.env.REDIS_TLS === 'true' || 
+                       process.env.REDIS_TLS === '1' || 
+                       process.env.REDIS_TLS === 'TRUE';
+    
+    if (tlsEnabled) {
       logger.redis('TLS explicitly enabled via REDIS_TLS=true');
       config.tls = {
         rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false',
@@ -62,14 +83,14 @@ const getRedisConfig = () => {
         minVersion: 'TLSv1.2'
       };
     } else {
-      logger.redis('TLS disabled (set REDIS_TLS=true to enable)');
+      logger.redis(`TLS disabled (REDIS_TLS=${process.env.REDIS_TLS})`);
     }
 
     return config;
   }
   
-  // Fallback to localhost
-  logger.redis('Using Local Redis (localhost:6379)');
+  // Fallback to localhost without auth
+  logger.redis('Using Local Redis (localhost:6379) - No Auth');
   return {
     host: 'localhost',
     port: 6379,
