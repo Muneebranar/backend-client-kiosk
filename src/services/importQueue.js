@@ -4,51 +4,61 @@ const Customer = require('../models/Customer');
 const Business = require('../models/Business');
 const ImportHistory = require('../models/ImportHistory');
 const CheckinLog = require('../models/CheckinLog');
-const PointsLedger = require('../models/PointsLedger');
 const twilioService = require('./twilioService');
 const dayjs = require('dayjs');
 const customParseFormat = require('dayjs/plugin/customParseFormat');
 
 dayjs.extend(customParseFormat);
 
-const DEFAULT_POINTS = 3;
 const DEFAULT_CHECKINS = 3;
 
 // ⚡ OPTIMIZED SMS SETTINGS
 const WELCOME_BATCH_SIZE = 50;
 const WELCOME_DELAY = 500;
 
-// 🔧 FIXED: Redis Configuration with Upstash Support
+// 🔧 FIXED: Redis Configuration for Bull Queue
 const getRedisConfig = () => {
-  // Check if using Upstash
-  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-    console.log('🌐 Using Upstash Redis (Cloud)');
+  // Check if using standard Redis connection (REDIS_URL or REDIS_HOST)
+  if (process.env.REDIS_URL) {
+    console.log('🌐 Using Redis from REDIS_URL');
+    return process.env.REDIS_URL;
+  }
+  
+  if (process.env.REDIS_HOST && process.env.REDIS_PORT) {
+    console.log('🌐 Using Redis from REDIS_HOST/PORT');
     
-    // Parse Upstash URL
-    const url = new URL(process.env.UPSTASH_REDIS_REST_URL);
-    
-    return {
-      host: url.hostname,
-      port: 6379,
-      password: process.env.UPSTASH_REDIS_REST_TOKEN,
-      tls: {
-        rejectUnauthorized: false
-      },
-      maxRetriesPerRequest: 3,
+    const config = {
+      host: process.env.REDIS_HOST,
+      port: parseInt(process.env.REDIS_PORT),
+      maxRetriesPerRequest: null, // Important for Bull
       enableReadyCheck: false,
       retryStrategy: (times) => {
         const delay = Math.min(times * 50, 2000);
         return delay;
       }
     };
+
+    // Add password if provided
+    if (process.env.REDIS_PASSWORD) {
+      config.password = process.env.REDIS_PASSWORD;
+    }
+
+    // Add TLS for cloud Redis (like Redis Labs)
+    if (process.env.REDIS_TLS === 'true' || process.env.REDIS_HOST.includes('cloud.redislabs')) {
+      config.tls = {
+        rejectUnauthorized: false
+      };
+    }
+
+    return config;
   }
   
   // Fallback to localhost
-  console.log('💻 Using Local Redis');
+  console.log('💻 Using Local Redis (localhost:6379)');
   return {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT) || 6379,
-    maxRetriesPerRequest: 3,
+    host: 'localhost',
+    port: 6379,
+    maxRetriesPerRequest: null,
     enableReadyCheck: false,
     retryStrategy: (times) => {
       const delay = Math.min(times * 50, 2000);
@@ -60,9 +70,13 @@ const getRedisConfig = () => {
 const importQueue = new Queue('csv-import', {
   redis: getRedisConfig(),
   settings: {
-    lockDuration: 30000,
-    stalledInterval: 30000,
-    maxStalledCount: 1
+    lockDuration: 300000, // 5 minutes (increased from 30s)
+    stalledInterval: 60000, // Check every 60s (increased from 30s)
+    maxStalledCount: 2 // Allow 2 stalls before failing
+  },
+  limiter: {
+    max: 1, // Process 1 job at a time
+    duration: 1000
   }
 });
 
@@ -169,7 +183,7 @@ function isUSPhoneNumber(phone) {
   return phone.startsWith('+1');
 }
 
-// ⚡ OPTIMIZED: Process imports with updated requirements
+// ⚡ OPTIMIZED: Process imports with check-in based system
 importQueue.process(async (job) => {
   const { importId, businessId, rows, sendWelcome = true } = job.data;
   
@@ -293,12 +307,11 @@ importQueue.process(async (job) => {
         });
 
         if (existingCustomer) {
-          // ✅ REQUIREMENT #2: Update existing customer
+          // ✅ REQUIREMENT #2: Update existing customer (CHECK-IN BASED)
           
-          // Increment points, currentCheckIns, and totalCheckIns by 3
-          existingCustomer.points += DEFAULT_POINTS;
-          existingCustomer.currentCheckIns = (existingCustomer.currentCheckIns || 0) + DEFAULT_CHECKINS;
-          existingCustomer.totalCheckins = (existingCustomer.totalCheckins || 0) + DEFAULT_CHECKINS;
+          // ✅ SET check-ins to default (don't add, just set to 3)
+          existingCustomer.currentCheckIns = DEFAULT_CHECKINS;
+          existingCustomer.totalCheckins = Math.max(existingCustomer.totalCheckins || 0, DEFAULT_CHECKINS);
 
           // Update lastCheckinAt with date from CSV
           if (lastCheckInDate) {
@@ -330,40 +343,25 @@ importQueue.process(async (job) => {
             customerId: existingCustomer._id,
             phone: existingCustomer.phone,
             countryCode: existingCustomer.countryCode || countryCode,
-            status: 'api',
-            pointsAwarded: DEFAULT_POINTS,
+            status: 'checkin',
+            pointsAwarded: 0, // No points, only check-ins
             metadata: {
               source: 'csv_import_update',
-              importId: importId
+              importId: importId,
+              checkinsAdded: DEFAULT_CHECKINS
             },
             createdAt: lastCheckInDate || new Date()
           });
 
-          // Create points ledger
-          await PointsLedger.create({
-            customerId: existingCustomer._id,
-            businessId,
-            type: 'earned',
-            amount: DEFAULT_POINTS,
-            balance: existingCustomer.points,
-            description: 'Points added from CSV import',
-            createdAt: lastCheckInDate || new Date(),
-            metadata: {
-              source: 'csv_import_update',
-              importId: importId
-            }
-          });
-
           results.updated++;
-          console.log(`✅ Updated ${phone}: +${DEFAULT_POINTS} points (Total: ${existingCustomer.points}), Status: ${csvSubscriberStatus}`);
+          console.log(`✅ Updated ${phone}: Set to ${DEFAULT_CHECKINS} check-ins (Total ever: ${existingCustomer.totalCheckins}), Status: ${csvSubscriberStatus}`);
 
         } else {
-          // ✅ REQUIREMENT #1: NEW CUSTOMER - Set defaults
+          // ✅ REQUIREMENT #1: NEW CUSTOMER - Check-in based system
           const newCustomer = await Customer.create({
             phone: phone,
             countryCode: countryCode,
             businessId: businessId,
-            points: DEFAULT_POINTS,
             currentCheckIns: DEFAULT_CHECKINS,
             totalCheckins: DEFAULT_CHECKINS,
             subscriberStatus: csvSubscriberStatus,
@@ -387,32 +385,18 @@ importQueue.process(async (job) => {
             customerId: newCustomer._id,
             phone: newCustomer.phone,
             countryCode: newCustomer.countryCode,
-            status: 'api',
-            pointsAwarded: DEFAULT_POINTS,
+            status: 'checkin',
+            pointsAwarded: 0, // No points, only check-ins
             metadata: {
               source: 'csv_import',
-              importId: importId
+              importId: importId,
+              checkinsAdded: DEFAULT_CHECKINS
             },
             createdAt: lastCheckInDate || new Date()
           });
 
-          // Create points ledger
-          await PointsLedger.create({
-            customerId: newCustomer._id,
-            businessId,
-            type: 'earned',
-            amount: DEFAULT_POINTS,
-            balance: DEFAULT_POINTS,
-            description: 'Initial points from CSV import',
-            createdAt: lastCheckInDate || new Date(),
-            metadata: {
-              source: 'csv_import',
-              importId: importId
-            }
-          });
-
           results.created++;
-          console.log(`✅ Created ${phone} with ${DEFAULT_POINTS} points and ${DEFAULT_CHECKINS} checkins (Status: ${csvSubscriberStatus})`);
+          console.log(`✅ Created ${phone} with ${DEFAULT_CHECKINS} check-ins (Status: ${csvSubscriberStatus})`);
 
           if (sendWelcome && !isUnsubscribedInCSV && isUSNumber) {
             newCustomersForWelcome.push(newCustomer);
@@ -448,7 +432,7 @@ importQueue.process(async (job) => {
     console.log(`📨 Sending welcome messages to ${newCustomersForWelcome.length} new US customers`);
     
     const welcomeMessage = business.messages?.welcome || 
-      `Welcome to ${business.name}! 🎉 You've been added to our loyalty program with ${DEFAULT_POINTS} points. Reply STOP to unsubscribe.`;
+      `Welcome to ${business.name}! 🎉 You've been added to our loyalty program with ${DEFAULT_CHECKINS} check-ins. Reply STOP to unsubscribe.`;
 
     const successfulCustomerIds = [];
     const startTime = Date.now();

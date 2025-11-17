@@ -5,35 +5,33 @@ const cors = require("cors");
 const morgan = require("morgan");
 const path = require("path");
 
+// Routes
 const kioskRoutes = require("./routes/kiosk");
 const adminRoutes = require("./routes/admin");
 
 const app = express();
 
-// 🛡 Security & Middleware
+// 🛡️ Security & Middleware
 app.use(helmet());
-
 app.use(
   cors({
-    origin: "https://gilded-tanuki-47e0bd.netlify.app", // ⚠ YOUR NETLIFY URL
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    origin: process.env.CLIENT_URL || "*", // restrict later in production
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     credentials: true,
   })
 );
-
-// ⚠️ THE MOST IMPORTANT LINE FOR RENDER
-app.options("*", cors());
-
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
 
+// 📁 Serve static uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
+// 🔹 API Routes
 app.use("/kiosk", kioskRoutes);
 app.use("/admin", adminRoutes);
 
+// 🧩 Health check route
 app.get("/", (req, res) => {
   res.json({
     ok: true,
@@ -43,10 +41,12 @@ app.get("/", (req, res) => {
   });
 });
 
+// ❌ 404 fallback
 app.use((req, res) => {
   res.status(404).json({ error: "Route not found" });
 });
 
+// 💥 Global error handler
 app.use((err, req, res, next) => {
   console.error("🚨 Global Error:", err);
   res.status(500).json({
