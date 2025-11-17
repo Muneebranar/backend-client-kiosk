@@ -7,6 +7,7 @@ const CheckinLog = require('../models/CheckinLog');
 const twilioService = require('./twilioService');
 const dayjs = require('dayjs');
 const customParseFormat = require('dayjs/plugin/customParseFormat');
+const logger = require('../utils/logger');
 
 dayjs.extend(customParseFormat);
 
@@ -16,45 +17,59 @@ const DEFAULT_CHECKINS = 3;
 const WELCOME_BATCH_SIZE = 50;
 const WELCOME_DELAY = 500;
 
-// 🔧 FIXED: Redis Configuration for Bull Queue
+// 🔧 FIXED: Redis Configuration - Removed TLS Issue
 const getRedisConfig = () => {
+  logger.debug('Checking Redis configuration...');
+  logger.debug('REDIS_HOST:', process.env.REDIS_HOST);
+  logger.debug('REDIS_PORT:', process.env.REDIS_PORT);
+  logger.debug('REDIS_PASSWORD:', process.env.REDIS_PASSWORD ? '***SET***' : 'NOT SET');
+  logger.debug('REDIS_URL:', process.env.REDIS_URL ? '***SET***' : 'NOT SET');
+  
   // Check if using standard Redis connection (REDIS_URL or REDIS_HOST)
   if (process.env.REDIS_URL) {
-    console.log('🌐 Using Redis from REDIS_URL');
+    logger.redis('Using Redis from REDIS_URL');
     return process.env.REDIS_URL;
   }
   
   if (process.env.REDIS_HOST && process.env.REDIS_PORT) {
-    console.log('🌐 Using Redis from REDIS_HOST/PORT');
+    logger.redis('Using Redis from REDIS_HOST/PORT');
     
     const config = {
       host: process.env.REDIS_HOST,
       port: parseInt(process.env.REDIS_PORT),
+      password: process.env.REDIS_PASSWORD || undefined,
       maxRetriesPerRequest: null, // Important for Bull
       enableReadyCheck: false,
+      connectTimeout: 30000,
       retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
+        logger.warn(`Redis retry attempt ${times}`);
+        if (times > 10) {
+          logger.error('Redis max retries reached');
+          return null;
+        }
+        const delay = Math.min(times * 1000, 5000);
         return delay;
       }
     };
 
-    // Add password if provided
-    if (process.env.REDIS_PASSWORD) {
-      config.password = process.env.REDIS_PASSWORD;
-    }
-
-    // Add TLS for cloud Redis (like Redis Labs)
-    if (process.env.REDIS_TLS === 'true' || process.env.REDIS_HOST.includes('cloud.redislabs')) {
+    // 🔧 FIX: Only enable TLS if explicitly requested via REDIS_TLS=true
+    // Don't auto-enable TLS based on hostname
+    if (process.env.REDIS_TLS === 'true') {
+      logger.redis('TLS explicitly enabled via REDIS_TLS=true');
       config.tls = {
-        rejectUnauthorized: false
+        rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false',
+        servername: process.env.REDIS_HOST,
+        minVersion: 'TLSv1.2'
       };
+    } else {
+      logger.redis('TLS disabled (set REDIS_TLS=true to enable)');
     }
 
     return config;
   }
   
   // Fallback to localhost
-  console.log('💻 Using Local Redis (localhost:6379)');
+  logger.redis('Using Local Redis (localhost:6379)');
   return {
     host: 'localhost',
     port: 6379,
@@ -70,26 +85,26 @@ const getRedisConfig = () => {
 const importQueue = new Queue('csv-import', {
   redis: getRedisConfig(),
   settings: {
-    lockDuration: 300000, // 5 minutes (increased from 30s)
-    stalledInterval: 60000, // Check every 60s (increased from 30s)
-    maxStalledCount: 2 // Allow 2 stalls before failing
+    lockDuration: 300000,
+    stalledInterval: 60000,
+    maxStalledCount: 2
   },
   limiter: {
-    max: 1, // Process 1 job at a time
+    max: 1,
     duration: 1000
   }
 });
 
 importQueue.on('error', (error) => {
-  console.error('❌ Queue Redis Error:', error.message);
+  logger.error('Queue Redis Error:', error.message);
 });
 
 importQueue.on('stalled', (job) => {
-  console.warn('⚠️ Job Stalled:', job.id);
+  logger.warn('Job Stalled:', job.id);
 });
 
 importQueue.on('ready', () => {
-  console.log('✅ Import Queue Connected to Redis');
+  logger.success('Import Queue Connected to Redis');
 });
 
 /**
@@ -133,7 +148,6 @@ function parseDate(dateString) {
  * ✅ Get subscriber status from CSV "Subscribed" column
  */
 function getSubscriberStatusFromCSV(row) {
-  // Check for "Subscribed" column first
   const subscribedColumns = [
     'Subscribed', 'subscribed', 'SUBSCRIBED',
     'Subscribe', 'subscribe', 'SUBSCRIBE'
@@ -150,7 +164,6 @@ function getSubscriberStatusFromCSV(row) {
     }
   }
 
-  // Fallback: Check status columns
   const statusColumns = [
     'status', 'Status', 'STATUS',
     'subscriberStatus', 'SubscriberStatus'
@@ -184,11 +197,12 @@ function isUSPhoneNumber(phone) {
 }
 
 // ⚡ OPTIMIZED: Process imports with check-in based system
-importQueue.process(async (job) => {
+importQueue.process(1, async (job) => {
   const { importId, businessId, rows, sendWelcome = true } = job.data;
   
-  console.log(`🔄 Processing import job ${importId}...`);
-  console.log(`📨 Welcome messages enabled: ${sendWelcome}`);
+  logger.import(`Processing import job ${importId}...`);
+  logger.import(`Welcome messages enabled: ${sendWelcome}`);
+  logger.import(`Total rows to process: ${rows.length}`);
   
   const results = {
     totalRows: rows.length,
@@ -200,311 +214,320 @@ importQueue.process(async (job) => {
     errors: []
   };
 
-  await ImportHistory.findByIdAndUpdate(importId, {
-    status: 'processing',
-    startedAt: new Date()
-  });
+  try {
+    await ImportHistory.findByIdAndUpdate(importId, {
+      status: 'processing',
+      startedAt: new Date()
+    });
 
-  const business = await Business.findById(businessId);
-  if (!business) {
-    throw new Error('Business not found');
-  }
+    const business = await Business.findById(businessId);
+    if (!business) {
+      throw new Error('Business not found');
+    }
 
-  const newCustomersForWelcome = [];
-  const processedPhones = new Set();
-  const BATCH_SIZE = 100;
+    const newCustomersForWelcome = [];
+    const processedPhones = new Set();
+    const BATCH_SIZE = 50;
 
-  // Process rows in batches
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const batch = rows.slice(i, Math.min(i + BATCH_SIZE, rows.length));
+    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+      const batch = rows.slice(i, Math.min(i + BATCH_SIZE, rows.length));
     
-    await Promise.all(batch.map(async (row, batchIdx) => {
-      const rowNumber = i + batchIdx + 2;
+      await Promise.all(batch.map(async (row, batchIdx) => {
+        const rowNumber = i + batchIdx + 2;
 
-      try {
-        let phone = row.phone || row.Phone || row.PHONE || row.phoneNumber;
-        
-        if (!phone) {
+        try {
+          let phone = row.phone || row.Phone || row.PHONE || row.phoneNumber;
+          
+          if (!phone) {
+            results.skipped++;
+            results.errors.push({
+              row: rowNumber,
+              phone: 'N/A',
+              reason: 'Missing phone number'
+            });
+            return;
+          }
+
+          const originalPhone = phone;
+          phone = phone.trim();
+
+          if (phone.startsWith('+')) {
+            phone = phone.replace(/[\s\-\(\)]/g, '');
+            
+            if (!/^\+\d{10,15}$/.test(phone)) {
+              results.skipped++;
+              results.errors.push({
+                row: rowNumber,
+                phone: originalPhone,
+                reason: 'Invalid international format'
+              });
+              return;
+            }
+          } else {
+            phone = phone.replace(/\D/g, '');
+            
+            if (phone.length === 10) {
+              phone = '+1' + phone;
+            } else if (phone.length === 11 && phone.startsWith('1')) {
+              phone = '+' + phone;
+            } else {
+              results.skipped++;
+              results.errors.push({
+                row: rowNumber,
+                phone: originalPhone,
+                reason: 'Invalid US format'
+              });
+              return;
+            }
+          }
+
+          if (processedPhones.has(phone)) {
+            console.log(`⏭️ Skipping duplicate phone in CSV: ${phone}`);
+            results.skipped++;
+            return;
+          }
+          processedPhones.add(phone);
+
+          let countryCode = '+1';
+          if (phone.startsWith('+92')) countryCode = '+92';
+          else if (phone.startsWith('+44')) countryCode = '+44';
+          else if (phone.startsWith('+1')) countryCode = '+1';
+          else {
+            const match = phone.match(/^\+(\d{1,4})/);
+            if (match) {
+              countryCode = '+' + match[1];
+            }
+          }
+
+          const name = row.name || row.Name || '';
+          const email = row.email || row.Email || '';
+          const notes = row.notes || row.Notes || '';
+          
+          const csvSubscriberStatus = getSubscriberStatusFromCSV(row);
+          const isUnsubscribedInCSV = csvSubscriberStatus === 'unsubscribed';
+
+          const lastCheckInDate = parseDate(row['Last Check-In'] || row['lastCheckIn'] || row['last_check_in']);
+          const signUpDate = parseDate(row['Sign Up Date'] || row['signUpDate'] || row['sign_up_date']);
+
+          const isUSNumber = isUSPhoneNumber(phone);
+
+          const existingCustomer = await Customer.findOne({
+            phone: phone,
+            businessId: businessId,
+            deleted: { $ne: true }
+          });
+
+          if (existingCustomer) {
+            existingCustomer.currentCheckIns = DEFAULT_CHECKINS;
+            existingCustomer.totalCheckins = Math.max(existingCustomer.totalCheckins || 0, DEFAULT_CHECKINS);
+
+            if (lastCheckInDate) {
+              existingCustomer.lastCheckinAt = lastCheckInDate;
+            }
+
+            existingCustomer.subscriberStatus = csvSubscriberStatus;
+            
+            if (!existingCustomer.metadata) {
+              existingCustomer.metadata = {};
+            }
+            
+            if (name && name.trim()) {
+              existingCustomer.metadata.name = name.trim();
+            }
+            if (email && email.trim()) {
+              existingCustomer.metadata.email = email.trim();
+            }
+            if (notes && notes.trim()) {
+              existingCustomer.metadata.notes = notes.trim();
+            }
+
+            await existingCustomer.save();
+
+            await CheckinLog.create({
+              businessId,
+              customerId: existingCustomer._id,
+              phone: existingCustomer.phone,
+              countryCode: existingCustomer.countryCode || countryCode,
+              status: 'checkin',
+              pointsAwarded: 0,
+              metadata: {
+                source: 'csv_import_update',
+                importId: importId,
+                checkinsAdded: DEFAULT_CHECKINS
+              },
+              createdAt: lastCheckInDate || new Date()
+            });
+
+            results.updated++;
+            console.log(`✅ Updated ${phone}: Set to ${DEFAULT_CHECKINS} check-ins (Total ever: ${existingCustomer.totalCheckins}), Status: ${csvSubscriberStatus}`);
+
+          } else {
+            const newCustomer = await Customer.create({
+              phone: phone,
+              countryCode: countryCode,
+              businessId: businessId,
+              currentCheckIns: DEFAULT_CHECKINS,
+              totalCheckins: DEFAULT_CHECKINS,
+              subscriberStatus: csvSubscriberStatus,
+              consentGiven: true,
+              ageVerified: true,
+              firstCheckinAt: signUpDate || new Date(),
+              lastCheckinAt: lastCheckInDate || new Date(),
+              metadata: {
+                name: name || undefined,
+                email: email || undefined,
+                notes: notes || undefined,
+                welcomeSent: false,
+                importedViaCSV: true,
+                isInternational: !isUSNumber
+              }
+            });
+
+            await CheckinLog.create({
+              businessId,
+              customerId: newCustomer._id,
+              phone: newCustomer.phone,
+              countryCode: newCustomer.countryCode,
+              status: 'checkin',
+              pointsAwarded: 0,
+              metadata: {
+                source: 'csv_import',
+                importId: importId,
+                checkinsAdded: DEFAULT_CHECKINS
+              },
+              createdAt: lastCheckInDate || new Date()
+            });
+
+            results.created++;
+            console.log(`✅ Created ${phone} with ${DEFAULT_CHECKINS} check-ins (Status: ${csvSubscriberStatus})`);
+
+            if (sendWelcome && !isUnsubscribedInCSV && isUSNumber) {
+              newCustomersForWelcome.push(newCustomer);
+            }
+          }
+
+        } catch (err) {
+          console.error(`❌ Error row ${rowNumber}:`, err.message);
           results.skipped++;
           results.errors.push({
             row: rowNumber,
-            phone: 'N/A',
-            reason: 'Missing phone number'
+            phone: row.phone || 'N/A',
+            reason: err.message
           });
-          return;
         }
+      }));
 
-        const originalPhone = phone;
-        phone = phone.trim();
+      const progress = Math.min(100, Math.round(((i + BATCH_SIZE) / rows.length) * 100));
+      await job.progress(progress);
+      
+      await job.update({ ...job.data, lastProcessedIndex: i + BATCH_SIZE });
+      
+      await ImportHistory.findByIdAndUpdate(importId, {
+        progress: progress,
+        'results.created': results.created,
+        'results.updated': results.updated,
+        'results.skipped': results.skipped,
+        'results.welcomesSent': results.welcomesSent,
+        'results.welcomesFailed': results.welcomesFailed
+      });
+      
+      console.log(`📊 Progress: ${progress}% (${i + BATCH_SIZE}/${rows.length} rows processed)`);
+    }
 
-        if (phone.startsWith('+')) {
-          phone = phone.replace(/[\s\-\(\)]/g, '');
-          
-          if (!/^\+\d{10,15}$/.test(phone)) {
-            results.skipped++;
-            results.errors.push({
-              row: rowNumber,
-              phone: originalPhone,
-              reason: 'Invalid international format'
-            });
-            return;
-          }
-        } else {
-          phone = phone.replace(/\D/g, '');
-          
-          if (phone.length === 10) {
-            phone = '+1' + phone;
-          } else if (phone.length === 11 && phone.startsWith('1')) {
-            phone = '+' + phone;
-          } else {
-            results.skipped++;
-            results.errors.push({
-              row: rowNumber,
-              phone: originalPhone,
-              reason: 'Invalid US format'
-            });
-            return;
-          }
-        }
+    // Send welcome messages
+    if (sendWelcome && newCustomersForWelcome.length > 0) {
+      console.log(`📨 Sending welcome messages to ${newCustomersForWelcome.length} new US customers`);
+      
+      const welcomeMessage = business.messages?.welcome || 
+        `Welcome to ${business.name}! 🎉 You've been added to our loyalty program with ${DEFAULT_CHECKINS} check-ins. Reply STOP to unsubscribe.`;
 
-        // ✅ REQUIREMENT #3: Ignore duplicate rows within same CSV
-        if (processedPhones.has(phone)) {
-          console.log(`⏭️ Skipping duplicate phone in CSV: ${phone}`);
-          results.skipped++;
-          return;
-        }
-        processedPhones.add(phone);
+      const successfulCustomerIds = [];
+      const startTime = Date.now();
 
-        let countryCode = '+1';
-        if (phone.startsWith('+92')) countryCode = '+92';
-        else if (phone.startsWith('+44')) countryCode = '+44';
-        else if (phone.startsWith('+1')) countryCode = '+1';
-        else {
-          const match = phone.match(/^\+(\d{1,4})/);
-          if (match) {
-            countryCode = '+' + match[1];
-          }
-        }
-
-        const name = row.name || row.Name || '';
-        const email = row.email || row.Email || '';
-        const notes = row.notes || row.Notes || '';
+      for (let i = 0; i < newCustomersForWelcome.length; i += WELCOME_BATCH_SIZE) {
+        const welcomeBatch = newCustomersForWelcome.slice(i, i + WELCOME_BATCH_SIZE);
         
-        // ✅ Get status from "Subscribed" column
-        const csvSubscriberStatus = getSubscriberStatusFromCSV(row);
-        const isUnsubscribedInCSV = csvSubscriberStatus === 'unsubscribed';
+        const batchResults = await Promise.allSettled(
+          welcomeBatch.map(async (customer) => {
+            try {
+              await twilioService.sendSMS({
+                to: customer.phone,
+                body: welcomeMessage,
+                businessId: businessId
+              });
 
-        // ✅ Parse dates from CSV
-        const lastCheckInDate = parseDate(row['Last Check-In'] || row['lastCheckIn'] || row['last_check_in']);
-        const signUpDate = parseDate(row['Sign Up Date'] || row['signUpDate'] || row['sign_up_date']);
-
-        const isUSNumber = isUSPhoneNumber(phone);
-
-        const existingCustomer = await Customer.findOne({
-          phone: phone,
-          businessId: businessId,
-          deleted: { $ne: true }
-        });
-
-        if (existingCustomer) {
-          // ✅ REQUIREMENT #2: Update existing customer (CHECK-IN BASED)
-          
-          // ✅ SET check-ins to default (don't add, just set to 3)
-          existingCustomer.currentCheckIns = DEFAULT_CHECKINS;
-          existingCustomer.totalCheckins = Math.max(existingCustomer.totalCheckins || 0, DEFAULT_CHECKINS);
-
-          // Update lastCheckinAt with date from CSV
-          if (lastCheckInDate) {
-            existingCustomer.lastCheckinAt = lastCheckInDate;
-          }
-
-          // Update status based on CSV "Subscribed" column
-          existingCustomer.subscriberStatus = csvSubscriberStatus;
-          
-          if (!existingCustomer.metadata) {
-            existingCustomer.metadata = {};
-          }
-          
-          if (name && name.trim()) {
-            existingCustomer.metadata.name = name.trim();
-          }
-          if (email && email.trim()) {
-            existingCustomer.metadata.email = email.trim();
-          }
-          if (notes && notes.trim()) {
-            existingCustomer.metadata.notes = notes.trim();
-          }
-
-          await existingCustomer.save();
-
-          // ✅ Create checkin log
-          await CheckinLog.create({
-            businessId,
-            customerId: existingCustomer._id,
-            phone: existingCustomer.phone,
-            countryCode: existingCustomer.countryCode || countryCode,
-            status: 'checkin',
-            pointsAwarded: 0, // No points, only check-ins
-            metadata: {
-              source: 'csv_import_update',
-              importId: importId,
-              checkinsAdded: DEFAULT_CHECKINS
-            },
-            createdAt: lastCheckInDate || new Date()
-          });
-
-          results.updated++;
-          console.log(`✅ Updated ${phone}: Set to ${DEFAULT_CHECKINS} check-ins (Total ever: ${existingCustomer.totalCheckins}), Status: ${csvSubscriberStatus}`);
-
-        } else {
-          // ✅ REQUIREMENT #1: NEW CUSTOMER - Check-in based system
-          const newCustomer = await Customer.create({
-            phone: phone,
-            countryCode: countryCode,
-            businessId: businessId,
-            currentCheckIns: DEFAULT_CHECKINS,
-            totalCheckins: DEFAULT_CHECKINS,
-            subscriberStatus: csvSubscriberStatus,
-            consentGiven: true,
-            ageVerified: true,
-            firstCheckinAt: signUpDate || new Date(),
-            lastCheckinAt: lastCheckInDate || new Date(),
-            metadata: {
-              name: name || undefined,
-              email: email || undefined,
-              notes: notes || undefined,
-              welcomeSent: false,
-              importedViaCSV: true,
-              isInternational: !isUSNumber
+              successfulCustomerIds.push(customer._id);
+              results.welcomesSent++;
+              
+              return { success: true, phone: customer.phone };
+            } catch (smsErr) {
+              console.error(`❌ Failed to send welcome to ${customer.phone}:`, smsErr.message);
+              results.welcomesFailed++;
+              return { success: false, phone: customer.phone };
             }
-          });
+          })
+        );
 
-          // ✅ Create checkin log
-          await CheckinLog.create({
-            businessId,
-            customerId: newCustomer._id,
-            phone: newCustomer.phone,
-            countryCode: newCustomer.countryCode,
-            status: 'checkin',
-            pointsAwarded: 0, // No points, only check-ins
-            metadata: {
-              source: 'csv_import',
-              importId: importId,
-              checkinsAdded: DEFAULT_CHECKINS
-            },
-            createdAt: lastCheckInDate || new Date()
-          });
+        const batchSuccess = batchResults.filter(r => r.status === 'fulfilled' && r.value?.success).length;
+        console.log(`📊 SMS Batch ${Math.floor(i/WELCOME_BATCH_SIZE) + 1}: ${batchSuccess}/${welcomeBatch.length} sent`);
 
-          results.created++;
-          console.log(`✅ Created ${phone} with ${DEFAULT_CHECKINS} check-ins (Status: ${csvSubscriberStatus})`);
-
-          if (sendWelcome && !isUnsubscribedInCSV && isUSNumber) {
-            newCustomersForWelcome.push(newCustomer);
-          }
+        if (i + WELCOME_BATCH_SIZE < newCustomersForWelcome.length) {
+          await new Promise(resolve => setTimeout(resolve, WELCOME_DELAY));
         }
-
-      } catch (err) {
-        console.error(`❌ Error row ${rowNumber}:`, err.message);
-        results.skipped++;
-        results.errors.push({
-          row: rowNumber,
-          phone: row.phone || 'N/A',
-          reason: err.message
-        });
       }
-    }));
 
-    const progress = Math.min(100, Math.round(((i + BATCH_SIZE) / rows.length) * 100));
-    await job.progress(progress);
+      if (successfulCustomerIds.length > 0) {
+        try {
+          const updateResult = await Customer.updateMany(
+            { _id: { $in: successfulCustomerIds } },
+            { 
+              $set: { 
+                'metadata.welcomeSent': true,
+                'metadata.welcomeSentAt': new Date()
+              }
+            }
+          );
+          console.log(`✅ Bulk updated ${updateResult.modifiedCount} customers`);
+        } catch (updateErr) {
+          console.error('❌ Failed to bulk update customers:', updateErr.message);
+        }
+      }
+
+      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.log(`📨 Welcome messages complete: ${results.welcomesSent} sent, ${results.welcomesFailed} failed in ${elapsedTime}s`);
+    }
+
+    await ImportHistory.findByIdAndUpdate(importId, {
+      status: 'completed',
+      progress: 100,
+      results: results,
+      completedAt: new Date()
+    });
+
+    console.log(`✅ Import job ${importId} completed:`, results);
+
+    return results;
+  
+  } catch (error) {
+    console.error(`❌ Import job ${importId} failed:`, error);
     
     await ImportHistory.findByIdAndUpdate(importId, {
-      progress: progress,
-      'results.created': results.created,
-      'results.updated': results.updated,
-      'results.skipped': results.skipped,
-      'results.welcomesSent': results.welcomesSent,
-      'results.welcomesFailed': results.welcomesFailed
+      status: 'failed',
+      completedAt: new Date(),
+      results: {
+        ...results,
+        errors: [...results.errors, {
+          row: 0,
+          phone: 'N/A',
+          reason: error.message
+        }]
+      }
     });
-  }
-
-  // ⚡ Send welcome messages
-  if (sendWelcome && newCustomersForWelcome.length > 0) {
-    console.log(`📨 Sending welcome messages to ${newCustomersForWelcome.length} new US customers`);
     
-    const welcomeMessage = business.messages?.welcome || 
-      `Welcome to ${business.name}! 🎉 You've been added to our loyalty program with ${DEFAULT_CHECKINS} check-ins. Reply STOP to unsubscribe.`;
-
-    const successfulCustomerIds = [];
-    const startTime = Date.now();
-
-    for (let i = 0; i < newCustomersForWelcome.length; i += WELCOME_BATCH_SIZE) {
-      const welcomeBatch = newCustomersForWelcome.slice(i, i + WELCOME_BATCH_SIZE);
-      
-      const batchResults = await Promise.allSettled(
-        welcomeBatch.map(async (customer) => {
-          try {
-            await twilioService.sendSMS({
-              to: customer.phone,
-              body: welcomeMessage,
-              businessId: businessId
-            });
-
-            successfulCustomerIds.push(customer._id);
-            results.welcomesSent++;
-            
-            return { success: true, phone: customer.phone };
-          } catch (smsErr) {
-            console.error(`❌ Failed to send welcome to ${customer.phone}:`, smsErr.message);
-            results.welcomesFailed++;
-            return { success: false, phone: customer.phone };
-          }
-        })
-      );
-
-      const batchSuccess = batchResults.filter(r => r.status === 'fulfilled' && r.value?.success).length;
-      console.log(`📊 SMS Batch ${Math.floor(i/WELCOME_BATCH_SIZE) + 1}: ${batchSuccess}/${welcomeBatch.length} sent`);
-
-      if (i + WELCOME_BATCH_SIZE < newCustomersForWelcome.length) {
-        await new Promise(resolve => setTimeout(resolve, WELCOME_DELAY));
-      }
-    }
-
-    // ✅ BULK UPDATE
-    if (successfulCustomerIds.length > 0) {
-      try {
-        const updateResult = await Customer.updateMany(
-          { _id: { $in: successfulCustomerIds } },
-          { 
-            $set: { 
-              'metadata.welcomeSent': true,
-              'metadata.welcomeSentAt': new Date()
-            }
-          }
-        );
-        console.log(`✅ Bulk updated ${updateResult.modifiedCount} customers`);
-      } catch (updateErr) {
-        console.error('❌ Failed to bulk update customers:', updateErr.message);
-      }
-    }
-
-    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`📨 Welcome messages complete: ${results.welcomesSent} sent, ${results.welcomesFailed} failed in ${elapsedTime}s`);
+    throw error;
   }
-
-  // Mark complete
-  await ImportHistory.findByIdAndUpdate(importId, {
-    status: 'completed',
-    progress: 100,
-    results: results,
-    completedAt: new Date()
-  });
-
-  console.log(`✅ Import job ${importId} completed:`, results);
-
-  return results;
 });
 
-// Error handling
 importQueue.on('failed', async (job, err) => {
   console.error(`❌ Job ${job.id} failed:`, err);
   
