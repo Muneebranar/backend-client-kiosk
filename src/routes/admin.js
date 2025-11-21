@@ -74,9 +74,15 @@ router.put("/business/:id/twilio-number", debugAuth, admin.assignTwilioNumber);
 router.delete("/business/:id", admin.deleteBusiness);
 
 // --- TWILIO NUMBERS ---
+
 router.get("/twilio-numbers", admin.getTwilioNumbers);
 router.get("/twilio-numbers/with-assignments", admin.getTwilioNumbersWithAssignments);
 router.post("/twilio-numbers", admin.addTwilioNumber);
+// Add to adminRoutes.js after your existing Twilio routes:
+
+// Twilio number sync and diagnostics
+router.get("/twilio-numbers/diagnostics", admin.getTwilioNumberDiagnostics);
+router.post("/twilio-numbers/sync", admin.syncTwilioNumberAssignments);
 router.put("/twilio-numbers/:id", admin.updateTwilioNumber);
 router.delete("/twilio-numbers/:id", admin.deleteTwilioNumber);
 

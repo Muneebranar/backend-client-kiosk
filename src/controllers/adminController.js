@@ -774,6 +774,214 @@ exports.createBusiness = async (req, res) => {
 // 📞 TWILIO NUMBER MANAGEMENT (COMPLETE)
 // ==========================================
 
+
+
+/**
+ * Add these functions to your adminController.js
+ */
+
+/**
+ * Sync Twilio number assignments
+ * POST /admin/twilio-numbers/sync
+ * Fixes mismatches between Business.twilioNumber and TwilioNumber.assignedBusinesses
+ */
+exports.syncTwilioNumberAssignments = async (req, res) => {
+  try {
+    console.log('🔧 Starting Twilio number sync...');
+
+    // Get all businesses with Twilio numbers
+    const businesses = await Business.find({ 
+      twilioNumber: { $exists: true, $ne: null, $ne: '' }
+    }).select('_id name twilioNumber twilioNumberActive');
+
+    // Get all Twilio numbers
+    const twilioNumbers = await TwilioNumber.find();
+    const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
+
+    // Build correct assignment map
+    const correctAssignments = new Map();
+    
+    for (const business of businesses) {
+      const number = business.twilioNumber;
+      
+      // Skip default number
+      if (number === defaultNumber) continue;
+
+      if (!correctAssignments.has(number)) {
+        correctAssignments.set(number, []);
+      }
+      correctAssignments.get(number).push(business._id.toString());
+    }
+
+    // Fix each Twilio number
+    let fixedCount = 0;
+    const changes = [];
+    
+    for (const twilioNum of twilioNumbers) {
+      const expectedIds = correctAssignments.get(twilioNum.number) || [];
+      const currentIds = twilioNum.assignedBusinesses || [];
+
+      // Check if needs update
+      const currentSet = new Set(currentIds);
+      const expectedSet = new Set(expectedIds);
+      
+      const needsUpdate = 
+        currentSet.size !== expectedSet.size ||
+        ![...currentSet].every(id => expectedSet.has(id));
+
+      if (needsUpdate) {
+        changes.push({
+          number: twilioNum.number,
+          friendlyName: twilioNum.friendlyName,
+          before: currentIds,
+          after: expectedIds
+        });
+        
+        twilioNum.assignedBusinesses = expectedIds;
+        await twilioNum.save();
+        fixedCount++;
+      }
+    }
+
+    console.log(`✅ Sync completed: ${fixedCount} numbers updated`);
+
+    res.json({
+      ok: true,
+      message: `Sync completed successfully`,
+      stats: {
+        totalNumbers: twilioNumbers.length,
+        totalBusinesses: businesses.length,
+        numbersFixed: fixedCount
+      },
+      changes: changes
+    });
+
+  } catch (err) {
+    console.error("❌ Failed to sync Twilio numbers:", err);
+    res.status(500).json({ 
+      ok: false, 
+      error: "Failed to sync Twilio numbers",
+      message: err.message 
+    });
+  }
+};
+
+/**
+ * Get diagnostic info about Twilio number assignments
+ * GET /admin/twilio-numbers/diagnostics
+ */
+exports.getTwilioNumberDiagnostics = async (req, res) => {
+  try {
+    // Get all businesses with Twilio numbers
+    const businesses = await Business.find({ 
+      twilioNumber: { $exists: true, $ne: null, $ne: '' }
+    }).select('_id name twilioNumber twilioNumberActive');
+
+    // Get all Twilio numbers
+    const twilioNumbers = await TwilioNumber.find();
+    const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
+
+    // Build maps
+    const businessMap = new Map();
+    const twilioMap = new Map();
+    
+    // Map businesses to their numbers
+    for (const business of businesses) {
+      const number = business.twilioNumber;
+      if (!businessMap.has(number)) {
+        businessMap.set(number, []);
+      }
+      businessMap.get(number).push({
+        id: business._id.toString(),
+        name: business.name,
+        active: business.twilioNumberActive
+      });
+    }
+
+    // Map Twilio numbers to their assignments
+    for (const twilioNum of twilioNumbers) {
+      twilioMap.set(twilioNum.number, {
+        friendlyName: twilioNum.friendlyName,
+        assignedBusinesses: twilioNum.assignedBusinesses || []
+      });
+    }
+
+    // Find mismatches
+    const mismatches = [];
+    const orphanedNumbers = [];
+    const missingNumbers = [];
+
+    // Check each Twilio number
+    for (const [number, data] of twilioMap) {
+      const businessesUsingThis = businessMap.get(number) || [];
+      const expectedIds = businessesUsingThis.map(b => b.id);
+      const currentIds = data.assignedBusinesses;
+
+      const currentSet = new Set(currentIds);
+      const expectedSet = new Set(expectedIds);
+      
+      const isMismatch = 
+        currentSet.size !== expectedSet.size ||
+        ![...currentSet].every(id => expectedSet.has(id));
+
+      if (isMismatch) {
+        mismatches.push({
+          number: number,
+          friendlyName: data.friendlyName,
+          currentAssignments: currentIds,
+          expectedAssignments: expectedIds,
+          businesses: businessesUsingThis
+        });
+      }
+
+      if (businessesUsingThis.length === 0 && currentIds.length > 0) {
+        orphanedNumbers.push({
+          number: number,
+          friendlyName: data.friendlyName,
+          staleAssignments: currentIds
+        });
+      }
+    }
+
+    // Check for businesses using numbers not in TwilioNumber collection
+    for (const [number, businesses] of businessMap) {
+      if (number !== defaultNumber && !twilioMap.has(number)) {
+        missingNumbers.push({
+          number: number,
+          businesses: businesses
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      summary: {
+        totalTwilioNumbers: twilioNumbers.length,
+        totalBusinessesWithNumbers: businesses.length,
+        defaultNumber: defaultNumber,
+        mismatches: mismatches.length,
+        orphanedNumbers: orphanedNumbers.length,
+        missingNumbers: missingNumbers.length
+      },
+      details: {
+        mismatches: mismatches,
+        orphanedNumbers: orphanedNumbers,
+        missingNumbers: missingNumbers
+      }
+    });
+
+  } catch (err) {
+    console.error("❌ Failed to get diagnostics:", err);
+    res.status(500).json({ 
+      ok: false, 
+      error: "Failed to get diagnostics",
+      message: err.message 
+    });
+  }
+};
+
+
+
 /**
  * Get all Twilio numbers
  * GET /admin/twilio-numbers
@@ -993,6 +1201,11 @@ exports.deleteTwilioNumber = async (req, res) => {
  * PUT /admin/business/:id/twilio-number
  * ✅ FIXED: Supports master admin and business admins
  */
+/**
+ * Assign Twilio number to business
+ * PUT /admin/business/:id/twilio-number
+ * ✅ FIXED: Properly updates assignedBusinesses array
+ */
 exports.assignTwilioNumber = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1017,20 +1230,17 @@ exports.assignTwilioNumber = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Permission check for master admin and business admins
+    // ✅ Permission check for master admin and business admins
     const isMaster = req.user.role === 'master';
     
-    // For database users with businessId
     let isOwnBusiness = false;
     if (req.user.businessId) {
-      // Handle both ObjectId and string comparison
       const userBusinessId = req.user.businessId._id 
         ? req.user.businessId._id.toString() 
         : req.user.businessId.toString();
       isOwnBusiness = userBusinessId === business._id.toString();
     }
     
-    // Allow if master OR managing own business
     if (!isMaster && !isOwnBusiness) {
       console.log('❌ Access denied:', {
         userRole: req.user.role,
@@ -1045,26 +1255,20 @@ exports.assignTwilioNumber = async (req, res) => {
       });
     }
 
-    console.log('✅ Permission granted:', {
-      userRole: req.user.role,
-      isMaster,
-      isOwnBusiness
-    });
+    const businessIdString = business._id.toString();
+    const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
 
-    // If unassigning (empty twilioNumber)
+    // ✅ CASE 1: Unassigning number (empty twilioNumber)
     if (!twilioNumber || twilioNumber === "") {
       console.log('🔄 Unassigning number from business:', business.name);
       
-      // Remove from old Twilio number's assignedBusinesses (only if it's in DB)
-      if (business.twilioNumber) {
-        const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
-        // Only update DB if it's not the default number
-        if (business.twilioNumber !== defaultNumber) {
-          await TwilioNumber.updateOne(
-            { number: business.twilioNumber },
-            { $pull: { assignedBusinesses: business._id.toString() } }
-          );
-        }
+      // Remove from old Twilio number's assignedBusinesses
+      if (business.twilioNumber && business.twilioNumber !== defaultNumber) {
+        const updateResult = await TwilioNumber.updateOne(
+          { number: business.twilioNumber },
+          { $pull: { assignedBusinesses: businessIdString } }
+        );
+        console.log('   Removed from old number:', updateResult);
       }
 
       business.twilioNumber = null;
@@ -1080,11 +1284,10 @@ exports.assignTwilioNumber = async (req, res) => {
       });
     }
 
-    // Check if it's the default number from environment
-    const defaultNumber = process.env.DEFAULT_TWILIO_NUMBER;
+    // Check if it's the default number
     const isDefaultNumber = twilioNumber === defaultNumber;
 
-    // Validate that Twilio number exists (skip validation for default number)
+    // ✅ Validate that Twilio number exists (skip validation for default number)
     if (!isDefaultNumber) {
       const twilioDoc = await TwilioNumber.findOne({ number: twilioNumber });
       if (!twilioDoc) {
@@ -1103,32 +1306,54 @@ exports.assignTwilioNumber = async (req, res) => {
       isActive
     });
 
-    // Remove business from old Twilio number (if changing)
+    // ✅ CASE 2: Remove business from OLD number (if changing numbers)
     if (business.twilioNumber && business.twilioNumber !== twilioNumber) {
       const oldIsDefault = business.twilioNumber === defaultNumber;
-      // Only update DB if old number wasn't the default
+      
       if (!oldIsDefault) {
-        await TwilioNumber.updateOne(
+        const removeResult = await TwilioNumber.updateOne(
           { number: business.twilioNumber },
-          { $pull: { assignedBusinesses: business._id.toString() } }
+          { $pull: { assignedBusinesses: businessIdString } }
         );
+        console.log('   Removed from old number:', {
+          oldNumber: business.twilioNumber,
+          modifiedCount: removeResult.modifiedCount
+        });
       }
     }
 
-    // Add business to new Twilio number's assignedBusinesses (only if not default)
+    // ✅ CASE 3: Add business to NEW number (only if not default)
     if (!isDefaultNumber) {
-      await TwilioNumber.updateOne(
-        { number: twilioNumber },
-        { $addToSet: { assignedBusinesses: business._id.toString() } }
-      );
+      // First, check if already in array
+      const existingDoc = await TwilioNumber.findOne({ 
+        number: twilioNumber,
+        assignedBusinesses: businessIdString 
+      });
+
+      if (!existingDoc) {
+        const addResult = await TwilioNumber.updateOne(
+          { number: twilioNumber },
+          { $addToSet: { assignedBusinesses: businessIdString } }
+        );
+        console.log('   Added to new number:', {
+          newNumber: twilioNumber,
+          modifiedCount: addResult.modifiedCount
+        });
+      } else {
+        console.log('   Business already assigned to this number');
+      }
+
+      // ✅ Verify the update
+      const verifyDoc = await TwilioNumber.findOne({ number: twilioNumber });
+      console.log('   Verification - assignedBusinesses:', verifyDoc?.assignedBusinesses);
     }
 
-    // Update business
+    // ✅ CASE 4: Update business document
     business.twilioNumber = twilioNumber;
     business.twilioNumberActive = isActive !== undefined ? isActive : true;
     await business.save();
 
-    console.log("✅ Twilio number assigned:", {
+    console.log("✅ Twilio number assigned successfully:", {
       business: business.name,
       number: twilioNumber,
       isDefault: isDefaultNumber,
@@ -2645,3 +2870,5 @@ exports.redeemReward = async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 };
+
+

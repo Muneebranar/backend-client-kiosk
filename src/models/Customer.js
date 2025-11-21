@@ -70,7 +70,7 @@
       // Marketing & segmentation
       marketingConsent: {
         type: Boolean,
-        default: false,
+        default: true,
         index: true
       },
       marketingConsentDate: {

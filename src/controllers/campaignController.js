@@ -505,7 +505,7 @@ exports.getCampaignDetails = async (req, res) => {
 };
 
 /**
- * ✅ FIXED: SEND CAMPAIGN
+ * ✅ FIXED: SEND CAMPAIGN - Supports both DB and business-assigned Twilio numbers
  */
 exports.sendCampaign = async (req, res) => {
   try {
@@ -540,24 +540,44 @@ exports.sendCampaign = async (req, res) => {
       });
     }
 
-    // ✅ Check Twilio number
+    // ✅ Check Twilio number - support both DB numbers and default number
     console.log('\n📞 Checking Twilio number...');
     const businessIdString = campaign.businessId._id.toString();
-    
-    const allTwilioNumbers = await TwilioNumber.find().lean();
-    console.log(`   Total Twilio numbers: ${allTwilioNumbers.length}`);
-    allTwilioNumbers.forEach(num => {
-      console.log(`      - ${num.number}: businesses=${num.assignedBusinesses?.join(', ') || 'none'}, active=${num.isActive}`);
-    });
 
+    let twilioPhoneNumber = null;
+
+    // Method 1: Try to find in TwilioNumber collection
     const twilioNumber = await TwilioNumber.findOne({
       assignedBusinesses: businessIdString,
       isActive: true
     });
 
-    if (!twilioNumber) {
+    if (twilioNumber) {
+      twilioPhoneNumber = twilioNumber.number;
+      console.log(`✅ Found DB Twilio number: ${twilioPhoneNumber}`);
+    } else {
+      // Method 2: Check if business has the default number assigned
+      const businessDoc = await Business.findById(businessIdString).select('twilioNumber twilioNumberActive');
+      
+      if (businessDoc?.twilioNumber && businessDoc.twilioNumberActive) {
+        twilioPhoneNumber = businessDoc.twilioNumber;
+        console.log(`✅ Using business's assigned number: ${twilioPhoneNumber}`);
+      }
+    }
+
+    if (!twilioPhoneNumber) {
       console.log('❌ No active Twilio number found!');
       
+      const allTwilioNumbers = await TwilioNumber.find().lean();
+      console.log(`   Total Twilio numbers in DB: ${allTwilioNumbers.length}`);
+      allTwilioNumbers.forEach(num => {
+        console.log(`      - ${num.number}: businesses=${num.assignedBusinesses?.join(', ') || 'none'}, active=${num.isActive}`);
+      });
+
+      const businessDoc = await Business.findById(businessIdString).select('twilioNumber twilioNumberActive');
+      console.log(`   Business twilioNumber: ${businessDoc?.twilioNumber || 'none'}`);
+      console.log(`   Business twilioNumberActive: ${businessDoc?.twilioNumberActive}`);
+
       return res.status(400).json({
         ok: false,
         error: 'No active Twilio number assigned to this business.',
@@ -565,6 +585,7 @@ exports.sendCampaign = async (req, res) => {
         debug: {
           businessId: businessIdString,
           businessName: campaign.businessId.name,
+          businessTwilioNumber: businessDoc?.twilioNumber,
           availableNumbers: allTwilioNumbers.map(n => ({
             phone: n.number,
             assignedBusinesses: n.assignedBusinesses,
@@ -574,7 +595,7 @@ exports.sendCampaign = async (req, res) => {
       });
     }
 
-    console.log(`✅ Found Twilio number: ${twilioNumber.number}`);
+    console.log(`✅ Will use Twilio number: ${twilioPhoneNumber}`);
 
     // ✅ Check eligible customers
     const eligibleCustomers = await getAudienceCustomers(campaign);
@@ -618,7 +639,7 @@ exports.sendCampaign = async (req, res) => {
 };
 
 /**
- * ✅ PROCESS CAMPAIGN
+ * ✅ FIXED: PROCESS CAMPAIGN - Supports both DB and business-assigned Twilio numbers
  */
 async function processCampaign(campaignId) {
   try {
@@ -633,18 +654,30 @@ async function processCampaign(campaignId) {
     console.log(`   Business: ${campaign.businessId.name}`);
     console.log(`   Recipients: ${campaign.stats.totalRecipients}`);
 
-    // Get Twilio number
+    // ✅ Get Twilio number - support both DB and business-assigned numbers
     const businessIdString = campaign.businessId._id.toString();
+    let twilioPhoneNumber = null;
+
     const twilioNumber = await TwilioNumber.findOne({
       assignedBusinesses: businessIdString,
       isActive: true
     });
 
-    if (!twilioNumber) {
-      throw new Error(`No active Twilio number found for business ${campaign.businessId.name}`);
+    if (twilioNumber) {
+      twilioPhoneNumber = twilioNumber.number;
+      console.log(`   Using DB Twilio number: ${twilioPhoneNumber}`);
+    } else {
+      // Check business's assigned number
+      const businessDoc = await Business.findById(businessIdString).select('twilioNumber twilioNumberActive');
+      if (businessDoc?.twilioNumber && businessDoc.twilioNumberActive) {
+        twilioPhoneNumber = businessDoc.twilioNumber;
+        console.log(`   Using business Twilio number: ${twilioPhoneNumber}`);
+      }
     }
 
-    console.log(`   Twilio Number: ${twilioNumber.number}`);
+    if (!twilioPhoneNumber) {
+      throw new Error(`No active Twilio number found for business ${campaign.businessId.name}`);
+    }
 
     // Get customers
     const customers = await getAudienceCustomers(campaign);
@@ -664,7 +697,7 @@ async function processCampaign(campaignId) {
     // Send messages
     for (const customer of customers) {
       try {
-        await sendCampaignMessage(campaign, customer, twilioNumber.number);
+        await sendCampaignMessage(campaign, customer, twilioPhoneNumber);
         await new Promise(resolve => setTimeout(resolve, 100)); // Rate limit
       } catch (error) {
         console.error(`   ❌ Failed to send to ${customer.phone}:`, error.message);
@@ -814,7 +847,6 @@ exports.handleDeliveryStatus = async (req, res) => {
         $inc: { 'stats.delivered': 1 }
       });
     }
-
     if (MessageStatus === 'failed' || MessageStatus === 'undelivered') {
       delivery.failedAt = new Date();
       delivery.errorCode = ErrorCode;

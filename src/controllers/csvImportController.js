@@ -4,7 +4,6 @@ const Business = require('../models/Business');
 const Customer = require('../models/Customer');
 const ImportHistory = require('../models/ImportHistory');
 const CheckinLog = require('../models/CheckinLog');
-const PointsLedger = require('../models/PointsLedger');
 const importQueue = require('../services/importQueue');
 const twilioService = require('../services/twilioService');
 const dayjs = require('dayjs');
@@ -15,32 +14,125 @@ dayjs.extend(customParseFormat);
 const MAX_ROWS = 20000;
 const BATCH_SIZE = 100;
 const ASYNC_THRESHOLD = 1000;
-const DEFAULT_POINTS = 3;  // ✅ Default points for CSV imports
-const DEFAULT_CHECKINS = 3; // ✅ Default checkins for CSV imports
+const DEFAULT_CHECKINS = 3; // ✅ Each CSV row = 3 check-in
 
-// ⚡ OPTIMIZED SMS SETTINGS
 const WELCOME_BATCH_SIZE = 50;
 const WELCOME_DELAY = 500;
 
 /**
- * ✅ Parse date from CSV with multiple format support
+ * ✅ Detect if CSV has headers by checking first row
  */
+function hasHeaders(firstRow) {
+  if (!firstRow) return false;
+  
+  const keys = Object.keys(firstRow);
+  
+  if (keys.every(k => /^\d+$/.test(k))) {
+    return false;
+  }
+  
+  const headerKeywords = [
+    'phone', 'name', 'email', 'status', 'subscribed', 
+    'checkin', 'signup', 'date', 'notes', 'customer'
+  ];
+  
+  const hasHeaderKeywords = keys.some(key => 
+    headerKeywords.some(keyword => 
+      key.toLowerCase().includes(keyword)
+    )
+  );
+  
+  if (hasHeaderKeywords) return true;
+  
+  const firstValue = firstRow[keys[0]];
+  if (!firstValue) return false;
+  
+  const phonePattern = /^[\+\d\(\)\s\-]{10,}$/;
+  if (phonePattern.test(String(firstValue).trim())) {
+    return false;
+  }
+  
+  return true;
+}
+
+function extractPhoneFromHeaderlessRow(row) {
+  const keys = Object.keys(row);
+  
+  const firstKey = keys[0];
+  if (firstKey && row[firstKey]) {
+    const value = String(row[firstKey]).trim();
+    if (looksLikePhone(value)) {
+      return value;
+    }
+  }
+  
+  for (const key of keys) {
+    const value = String(row[key] || '').trim();
+    if (looksLikePhone(value)) {
+      return value;
+    }
+  }
+  
+  return null;
+}
+
+function looksLikePhone(str) {
+  if (!str) return false;
+  const cleaned = str.replace(/[\s\-\(\)]/g, '');
+  return /^[\+]?\d{10,15}$/.test(cleaned);
+}
+
+function extractNameFromHeaderlessRow(row) {
+  const keys = Object.keys(row);
+  
+  if (keys[1] && row[keys[1]]) {
+    const value = String(row[keys[1]]).trim();
+    
+    if (!looksLikePhone(value) && 
+        !value.includes('@') && 
+        !looksLikeDate(value) &&
+        value.length > 0) {
+      return value;
+    }
+  }
+  
+  return '';
+}
+
+function extractEmailFromHeaderlessRow(row) {
+  const keys = Object.keys(row);
+  
+  for (const key of keys) {
+    const value = String(row[key] || '').trim();
+    if (value.includes('@') && value.includes('.')) {
+      return value;
+    }
+  }
+  
+  return '';
+}
+
+function looksLikeDate(str) {
+  if (!str) return false;
+  
+  const datePatterns = [
+    /^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/,
+    /^\d{1,2}[-\/]\d{1,2}[-\/]\d{4}/,
+    /^\d{1,2}[-\/]\d{1,2}[-\/]\d{2}$/
+  ];
+  
+  return datePatterns.some(pattern => pattern.test(str));
+}
+
 function parseDate(dateString) {
   if (!dateString || dateString.trim() === '') {
     return null;
   }
 
   const formats = [
-    'YYYY-MM-DD',
-    'MM/DD/YYYY',
-    'DD/MM/YYYY',
-    'YYYY/MM/DD',
-    'MM-DD-YYYY',
-    'DD-MM-YYYY',
-    'M/D/YYYY',
-    'D/M/YYYY',
-    'YYYY-MM-DD HH:mm:ss',
-    'MM/DD/YYYY HH:mm:ss'
+    'YYYY-MM-DD', 'MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY/MM/DD',
+    'MM-DD-YYYY', 'DD-MM-YYYY', 'M/D/YYYY', 'D/M/YYYY',
+    'YYYY-MM-DD HH:mm:ss', 'MM/DD/YYYY HH:mm:ss'
   ];
 
   for (const format of formats) {
@@ -50,25 +142,31 @@ function parseDate(dateString) {
     }
   }
 
-  // Try ISO format as fallback
   const isoDate = dayjs(dateString);
   if (isoDate.isValid()) {
     return isoDate.toDate();
   }
 
-  console.warn('⚠️ Could not parse date:', dateString);
   return null;
 }
 
-/**
- * ✅ ROBUST CSV SUBSCRIBER STATUS HANDLER
- */
-function getSubscriberStatusFromCSV(row) {
-  // Check for "Subscribed" column first (as per requirement)
-  const subscribedColumns = [
-    'Subscribed', 'subscribed', 'SUBSCRIBED',
-    'Subscribe', 'subscribe', 'SUBSCRIBE'
-  ];
+function getSubscriberStatusFromCSV(row, isHeaderless = false) {
+  if (isHeaderless) {
+    const keys = Object.keys(row);
+    for (const key of keys) {
+      const value = String(row[key] || '').trim().toLowerCase();
+      if (value === 'yes' || value === 'y' || value === 'true' || value === '1') {
+        return 'active';
+      } else if (value === 'no' || value === 'n' || value === 'false' || value === '0') {
+        return 'unsubscribed';
+      } else if (value === 'unsubscribed' || value === 'inactive') {
+        return 'unsubscribed';
+      }
+    }
+    return 'active';
+  }
+
+  const subscribedColumns = ['Subscribed', 'subscribed', 'SUBSCRIBED', 'Subscribe', 'subscribe', 'SUBSCRIBE'];
 
   for (const col of subscribedColumns) {
     if (row[col] !== undefined) {
@@ -81,27 +179,17 @@ function getSubscriberStatusFromCSV(row) {
     }
   }
 
-  // Fallback: Check status columns
-  const statusColumns = [
-    'status', 'Status', 'STATUS',
-    'subscriberStatus', 'SubscriberStatus', 'subscriber_status',
-    'subscriptionStatus', 'SubscriptionStatus', 'subscription_status'
-  ];
+  const statusColumns = ['status', 'Status', 'STATUS', 'subscriberStatus', 'SubscriberStatus', 'subscriber_status'];
 
   for (const col of statusColumns) {
     if (row[col]) {
       const normalizedStatus = String(row[col]).trim().toLowerCase();
-      
       const unsubscribedKeywords = [
         'unsubscribed', 'unsub', 'unsubscribe', 'inactive', 'disabled',
         'opted-out', 'opted_out', 'optedout', 'opt-out', 'opt_out', 'optout',
         'cancelled', 'canceled', 'stopped', 'no'
       ];
-
-      const isUnsubscribed = unsubscribedKeywords.some(keyword => 
-        normalizedStatus.includes(keyword)
-      );
-
+      const isUnsubscribed = unsubscribedKeywords.some(keyword => normalizedStatus.includes(keyword));
       return isUnsubscribed ? 'unsubscribed' : 'active';
     }
   }
@@ -109,9 +197,6 @@ function getSubscriberStatusFromCSV(row) {
   return 'active';
 }
 
-/**
- * ✅ Check if phone number is US-based
- */
 function isUSPhoneNumber(phone) {
   return phone.startsWith('+1');
 }
@@ -132,32 +217,22 @@ exports.importCustomersCSV = async (req, res) => {
     });
 
     if (!req.file || !req.file.buffer) {
-      return res.status(400).json({
-        ok: false,
-        error: 'No CSV file uploaded'
-      });
+      return res.status(400).json({ ok: false, error: 'No CSV file uploaded' });
     }
 
     let businessId = req.body.businessId;
 
     if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
       businessId = req.user.businessId;
-      console.log('🏢 Using admin\'s business:', businessId);
     }
 
     if (!businessId) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Business ID is required'
-      });
+      return res.status(400).json({ ok: false, error: 'Business ID is required' });
     }
 
     const business = await Business.findById(businessId);
     if (!business) {
-      return res.status(404).json({
-        ok: false,
-        error: 'Business not found'
-      });
+      return res.status(404).json({ ok: false, error: 'Business not found' });
     }
 
     console.log('✅ Importing to business:', business.name);
@@ -181,22 +256,17 @@ exports.importCustomersCSV = async (req, res) => {
     if (req.user.id && /^[0-9a-fA-F]{24}$/.test(req.user.id)) {
       importData.userId = req.user.id;
     } else {
-      importData.importedBy = {
-        id: req.user.id,
-        name: req.user.name,
-        email: req.user.email
-      };
+      importData.importedBy = { id: req.user.id, name: req.user.name, email: req.user.email };
     }
 
     importRecord = await ImportHistory.create(importData);
-    console.log('✅ Import record created:', importRecord._id);
 
     const rows = [];
     const bufferStream = Readable.from(req.file.buffer);
     
     await new Promise((resolve, reject) => {
       bufferStream
-        .pipe(csv())
+        .pipe(csv({ headers: false }))
         .on('data', (row) => {
           if (rows.length >= MAX_ROWS) {
             return reject(new Error(`CSV exceeds maximum of ${MAX_ROWS} rows`));
@@ -208,46 +278,42 @@ exports.importCustomersCSV = async (req, res) => {
     });
 
     const totalRows = rows.length;
-    console.log(`📊 CSV parsed: ${totalRows} rows`);
+    const csvHasHeaders = totalRows > 0 ? hasHeaders(rows[0]) : false;
+    console.log(`🔍 CSV: ${totalRows} rows, Headers: ${csvHasHeaders ? 'YES' : 'NO'}`);
 
-    importRecord.results.totalRows = totalRows;
+    let dataRows = rows;
+    if (!csvHasHeaders && totalRows > 0) {
+      const firstRow = rows[0];
+      const firstValue = firstRow[Object.keys(firstRow)[0]];
+      if (firstValue && !looksLikePhone(String(firstValue).trim())) {
+        dataRows = rows.slice(1);
+      }
+    }
+
+    importRecord.results.totalRows = dataRows.length;
     await importRecord.save();
 
     const sendWelcome = req.body.sendWelcome !== 'false';
 
-    if (totalRows > ASYNC_THRESHOLD) {
-      console.log(`🔄 Large file detected (${totalRows} rows) - queuing background job`);
-      
+    if (dataRows.length > ASYNC_THRESHOLD) {
       await importQueue.add({
         importId: importRecord._id.toString(),
         businessId: businessId,
-        rows: rows,
-        sendWelcome: sendWelcome
-      }, {
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 2000
-        }
-      });
+        rows: dataRows,
+        sendWelcome: sendWelcome,
+        hasHeaders: csvHasHeaders
+      }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
 
       return res.json({
-        ok: true,
-        success: true,
-        message: 'CSV import queued for processing',
-        importId: importRecord._id,
-        async: true,
-        totalRows: totalRows,
-        status: 'queued'
+        ok: true, success: true, message: 'CSV import queued for processing',
+        importId: importRecord._id, async: true, totalRows: dataRows.length,
+        hasHeaders: csvHasHeaders, status: 'queued'
       });
-
     } else {
-      console.log(`⚡ Small file (${totalRows} rows) - processing immediately`);
-      
       importRecord.status = 'processing';
       await importRecord.save();
 
-      const results = await processImportRows(rows, businessId, importRecord, sendWelcome);
+      const results = await processImportRows(dataRows, businessId, importRecord, sendWelcome, csvHasHeaders);
 
       importRecord.status = 'completed';
       importRecord.progress = 100;
@@ -255,46 +321,28 @@ exports.importCustomersCSV = async (req, res) => {
       importRecord.completedAt = new Date();
       await importRecord.save();
 
-      console.log('✅ CSV Import completed:', results);
-
       return res.json({
-        ok: true,
-        success: true,
-        message: 'CSV import completed',
-        importId: importRecord._id,
-        async: false,
-        results
+        ok: true, success: true, message: 'CSV import completed',
+        importId: importRecord._id, async: false, hasHeaders: csvHasHeaders, results
       });
     }
 
   } catch (err) {
     console.error('❌ CSV Import Error:', err);
-
     if (importRecord) {
       importRecord.status = 'failed';
       importRecord.completedAt = new Date();
-      if (!importRecord.results.errors) {
-        importRecord.results.errors = [];
-      }
-      importRecord.results.errors.push({
-        row: 0,
-        phone: 'N/A',
-        reason: err.message
-      });
+      importRecord.results.errors.push({ row: 0, phone: 'N/A', reason: err.message });
       await importRecord.save();
     }
-
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
+    res.status(500).json({ ok: false, error: err.message });
   }
 };
 
 /**
- * ⚡ OPTIMIZED: Process import rows - FIXED CheckinLog
+ * ⚡ Process import rows - CHECKINS ONLY (No Points)
  */
-async function processImportRows(rows, businessId, importRecord, sendWelcome = true) {
+async function processImportRows(rows, businessId, importRecord, sendWelcome = true, csvHasHeaders = true) {
   const results = {
     totalRows: rows.length,
     created: 0,
@@ -313,7 +361,8 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
   const newCustomersForWelcome = [];
   const processedPhones = new Set();
 
-  // Process rows in batches
+  console.log(`📋 Processing ${rows.length} rows (Headers: ${csvHasHeaders ? 'YES' : 'NO'})`);
+
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, Math.min(i + BATCH_SIZE, rows.length));
     
@@ -321,15 +370,23 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
       const rowNumber = i + batchIdx + 2;
 
       try {
-        let phone = row.phone || row.Phone || row.PHONE || row.phoneNumber;
+        let phone, name, email, notes;
+        
+        if (csvHasHeaders) {
+          phone = row.phone || row.Phone || row.PHONE || row.phoneNumber;
+          name = row.name || row.Name || '';
+          email = row.email || row.Email || '';
+          notes = row.notes || row.Notes || '';
+        } else {
+          phone = extractPhoneFromHeaderlessRow(row);
+          name = extractNameFromHeaderlessRow(row);
+          email = extractEmailFromHeaderlessRow(row);
+          notes = '';
+        }
         
         if (!phone) {
           results.skipped++;
-          results.errors.push({
-            row: rowNumber,
-            phone: 'N/A',
-            reason: 'Missing phone number'
-          });
+          results.errors.push({ row: rowNumber, phone: 'N/A', reason: 'Missing phone number' });
           return;
         }
 
@@ -339,37 +396,25 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
         // Phone validation and normalization
         if (phone.startsWith('+')) {
           phone = phone.replace(/[\s\-\(\)]/g, '');
-          
           if (!/^\+\d{10,15}$/.test(phone)) {
             results.skipped++;
-            results.errors.push({
-              row: rowNumber,
-              phone: originalPhone,
-              reason: `Invalid international format`
-            });
+            results.errors.push({ row: rowNumber, phone: originalPhone, reason: 'Invalid international format' });
             return;
           }
         } else {
           phone = phone.replace(/\D/g, '');
-          
           if (phone.length === 10) {
             phone = '+1' + phone;
           } else if (phone.length === 11 && phone.startsWith('1')) {
             phone = '+' + phone;
           } else {
             results.skipped++;
-            results.errors.push({
-              row: rowNumber,
-              phone: originalPhone,
-              reason: `Invalid US format`
-            });
+            results.errors.push({ row: rowNumber, phone: originalPhone, reason: 'Invalid US format' });
             return;
           }
         }
 
-        // ✅ REQUIREMENT #3: Ignore duplicate rows within same CSV
         if (processedPhones.has(phone)) {
-          console.log(`⏭️ Skipping duplicate phone in CSV: ${phone}`);
           results.skipped++;
           return;
         }
@@ -377,31 +422,24 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
 
         // Determine country code
         let countryCode = '+1';
-        if (phone.startsWith('+92')) {
-          countryCode = '+92';
-        } else if (phone.startsWith('+44')) {
-          countryCode = '+44';
-        } else if (phone.startsWith('+1')) {
-          countryCode = '+1';
-        } else {
+        if (phone.startsWith('+92')) countryCode = '+92';
+        else if (phone.startsWith('+44')) countryCode = '+44';
+        else if (phone.startsWith('+1')) countryCode = '+1';
+        else {
           const match = phone.match(/^\+(\d{1,4})/);
-          if (match) {
-            countryCode = '+' + match[1];
-          }
+          if (match) countryCode = '+' + match[1];
         }
 
-        // ✅ Parse data from CSV
-        const name = row.name || row.Name || '';
-        const email = row.email || row.Email || '';
-        const notes = row.notes || row.Notes || '';
-        
-        // ✅ Get status from "Subscribed" column
-        const csvSubscriberStatus = getSubscriberStatusFromCSV(row);
+        const csvSubscriberStatus = getSubscriberStatusFromCSV(row, !csvHasHeaders);
         const isUnsubscribedInCSV = csvSubscriberStatus === 'unsubscribed';
 
-        // ✅ Parse dates from CSV
-        const lastCheckInDate = parseDate(row['Last Check-In'] || row['lastCheckIn'] || row['last_check_in']);
-        const signUpDate = parseDate(row['Sign Up Date'] || row['signUpDate'] || row['sign_up_date']);
+        let lastCheckInDate = null;
+        let signUpDate = null;
+        
+        if (csvHasHeaders) {
+          lastCheckInDate = parseDate(row['Last Check-In'] || row['lastCheckIn'] || row['last_check_in']);
+          signUpDate = parseDate(row['Sign Up Date'] || row['signUpDate'] || row['sign_up_date']);
+        }
 
         const isUSNumber = isUSPhoneNumber(phone);
 
@@ -412,45 +450,36 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
         });
 
         if (existingCustomer) {
-          // ✅ REQUIREMENT #2: Update existing customer
-          
-          // Increment points, currentCheckIns, and totalCheckIns by 3
-          existingCustomer.points += DEFAULT_POINTS;
-          existingCustomer.currentCheckIns = (existingCustomer.currentCheckIns || 0) + DEFAULT_CHECKINS;
-          existingCustomer.totalCheckins = (existingCustomer.totalCheckins || 0) + DEFAULT_CHECKINS;
+          // ✅ UPDATE EXISTING CUSTOMER - CHECKINS ONLY
+          const currentCheckins = existingCustomer.totalCheckins || 0;
+          existingCustomer.totalCheckins = currentCheckins + DEFAULT_CHECKINS;
 
-          // Update lastCheckinAt with date from CSV
           if (lastCheckInDate) {
             existingCustomer.lastCheckinAt = lastCheckInDate;
+          } else {
+            existingCustomer.lastCheckinAt = new Date();
           }
 
-          // Update status based on CSV "Subscribed" column
           existingCustomer.subscriberStatus = csvSubscriberStatus;
           
           if (!existingCustomer.metadata) {
             existingCustomer.metadata = {};
           }
           
-          if (name && name.trim()) {
-            existingCustomer.metadata.name = name.trim();
-          }
-          if (email && email.trim()) {
-            existingCustomer.metadata.email = email.trim();
-          }
-          if (notes && notes.trim()) {
-            existingCustomer.metadata.notes = notes.trim();
-          }
+          if (name && name.trim()) existingCustomer.metadata.name = name.trim();
+          if (email && email.trim()) existingCustomer.metadata.email = email.trim();
+          if (notes && notes.trim()) existingCustomer.metadata.notes = notes.trim();
 
           await existingCustomer.save();
 
-          // ✅ FIXED: Create checkin log with correct fields
+          // ✅ Create CheckinLog with valid status
           await CheckinLog.create({
             businessId,
             customerId: existingCustomer._id,
-            phone: existingCustomer.phone, // ✅ Required field
+            phone: existingCustomer.phone,
             countryCode: existingCustomer.countryCode || countryCode,
-            status: 'api', // ✅ Valid enum value: 'manual', 'kiosk', or 'api'
-            pointsAwarded: DEFAULT_POINTS,
+            status: 'checkin', // ✅ Valid enum value
+            pointsAwarded: 0, // ✅ No points
             metadata: {
               source: 'csv_import_update',
               importId: importRecord._id.toString()
@@ -458,34 +487,18 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
             createdAt: lastCheckInDate || new Date()
           });
 
-          // Create points ledger
-          await PointsLedger.create({
-            customerId: existingCustomer._id,
-            businessId,
-            type: 'earned',
-            amount: DEFAULT_POINTS,
-            balance: existingCustomer.points,
-            description: 'Points added from CSV import',
-            createdAt: lastCheckInDate || new Date(),
-            metadata: {
-              source: 'csv_import_update',
-              importId: importRecord._id.toString()
-            }
-          });
-
           results.updated++;
-          console.log(`✅ Updated ${phone}: +${DEFAULT_POINTS} points (Total: ${existingCustomer.points}), Status: ${csvSubscriberStatus}`);
+          console.log(`✅ Updated ${phone}: +${DEFAULT_CHECKINS} checkin (Total: ${existingCustomer.totalCheckins})`);
 
         } else {
-          // ✅ REQUIREMENT #1: NEW CUSTOMER - Set defaults
+          // ✅ CREATE NEW CUSTOMER - CHECKINS ONLY
           const newCustomer = await Customer.create({
             phone: phone,
             countryCode: countryCode,
             businessId: businessId,
-            points: DEFAULT_POINTS,
-            currentCheckIns: DEFAULT_CHECKINS,
-            totalCheckins: DEFAULT_CHECKINS,
+            totalCheckins: DEFAULT_CHECKINS, // ✅ Only checkins
             subscriberStatus: csvSubscriberStatus,
+            marketingConsent: true,
             consentGiven: true,
             ageVerified: true,
             firstCheckinAt: signUpDate || new Date(),
@@ -500,14 +513,14 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
             }
           });
 
-          // ✅ FIXED: Create checkin log with correct fields
+          // ✅ Create CheckinLog with valid status
           await CheckinLog.create({
             businessId,
             customerId: newCustomer._id,
-            phone: newCustomer.phone, // ✅ Required field
+            phone: newCustomer.phone,
             countryCode: newCustomer.countryCode,
-            status: 'api', // ✅ Valid enum value
-            pointsAwarded: DEFAULT_POINTS,
+            status: 'checkin', // ✅ Valid enum value
+            pointsAwarded: 0, // ✅ No points
             metadata: {
               source: 'csv_import',
               importId: importRecord._id.toString()
@@ -515,23 +528,8 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
             createdAt: lastCheckInDate || new Date()
           });
 
-          // Create points ledger
-          await PointsLedger.create({
-            customerId: newCustomer._id,
-            businessId,
-            type: 'earned',
-            amount: DEFAULT_POINTS,
-            balance: DEFAULT_POINTS,
-            description: 'Initial points from CSV import',
-            createdAt: lastCheckInDate || new Date(),
-            metadata: {
-              source: 'csv_import',
-              importId: importRecord._id.toString()
-            }
-          });
-
           results.created++;
-          console.log(`✅ Created ${phone} with ${DEFAULT_POINTS} points and ${DEFAULT_CHECKINS} checkins (Status: ${csvSubscriberStatus})`);
+          console.log(`✅ Created ${phone} with ${DEFAULT_CHECKINS} checkin`);
 
           if (sendWelcome && !isUnsubscribedInCSV && isUSNumber) {
             newCustomersForWelcome.push(newCustomer);
@@ -539,11 +537,11 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
         }
 
       } catch (err) {
-        console.error(`❌ Error processing row ${rowNumber}:`, err.message);
+        console.error(`❌ Error row ${rowNumber}:`, err.message);
         results.skipped++;
         results.errors.push({
           row: rowNumber,
-          phone: row.phone || row.Phone || 'N/A',
+          phone: row.phone || row.Phone || extractPhoneFromHeaderlessRow(row) || 'N/A',
           reason: err.message
         });
       }
@@ -554,25 +552,22 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
       importRecord.progress = progress;
       importRecord.results = results;
       await importRecord.save();
-      
-      console.log(`📊 Progress: ${progress}% (${i + BATCH_SIZE}/${rows.length} rows)`);
     }
   }
 
-  // ⚡ Send welcome messages
+  // Send welcome messages
   if (sendWelcome && newCustomersForWelcome.length > 0) {
-    console.log(`📨 Sending welcome messages to ${newCustomersForWelcome.length} new US customers`);
+    console.log(`📨 Sending welcome to ${newCustomersForWelcome.length} new US customers`);
     
     const welcomeMessage = business.messages?.welcome || 
-      `Welcome to ${business.name}! 🎉 You've been added to our loyalty program with ${DEFAULT_POINTS} points. Reply STOP to unsubscribe.`;
+      `Welcome to ${business.name}! 🎉 You've been added to our loyalty program. Reply STOP to unsubscribe.`;
 
     const successfulCustomerIds = [];
-    const startTime = Date.now();
 
     for (let i = 0; i < newCustomersForWelcome.length; i += WELCOME_BATCH_SIZE) {
       const welcomeBatch = newCustomersForWelcome.slice(i, i + WELCOME_BATCH_SIZE);
       
-      const batchResults = await Promise.allSettled(
+      await Promise.allSettled(
         welcomeBatch.map(async (customer) => {
           try {
             await twilioService.sendSMS({
@@ -580,52 +575,35 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
               body: welcomeMessage,
               businessId: businessId
             });
-
             successfulCustomerIds.push(customer._id);
             results.welcomesSent++;
-            
-            return { success: true, phone: customer.phone };
           } catch (smsErr) {
-            console.error(`❌ Failed to send welcome to ${customer.phone}:`, smsErr.message);
+            console.error(`❌ SMS failed ${customer.phone}:`, smsErr.message);
             results.welcomesFailed++;
-            return { success: false, phone: customer.phone };
           }
         })
       );
-
-      const batchSuccess = batchResults.filter(r => r.status === 'fulfilled' && r.value?.success).length;
-      console.log(`📊 SMS Batch ${Math.floor(i/WELCOME_BATCH_SIZE) + 1}: ${batchSuccess}/${welcomeBatch.length} sent`);
 
       if (i + WELCOME_BATCH_SIZE < newCustomersForWelcome.length) {
         await new Promise(resolve => setTimeout(resolve, WELCOME_DELAY));
       }
     }
 
-    // ✅ BULK UPDATE
     if (successfulCustomerIds.length > 0) {
-      try {
-        const updateResult = await Customer.updateMany(
-          { _id: { $in: successfulCustomerIds } },
-          { 
-            $set: { 
-              'metadata.welcomeSent': true,
-              'metadata.welcomeSentAt': new Date()
-            }
-          }
-        );
-        console.log(`✅ Bulk updated ${updateResult.modifiedCount} customers`);
-      } catch (updateErr) {
-        console.error('❌ Failed to bulk update customers:', updateErr.message);
-      }
+      await Customer.updateMany(
+        { _id: { $in: successfulCustomerIds } },
+        { $set: { 'metadata.welcomeSent': true, 'metadata.welcomeSentAt': new Date() } }
+      );
     }
-
-    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`📨 Welcome messages complete: ${results.welcomesSent} sent, ${results.welcomesFailed} failed in ${elapsedTime}s`);
   }
 
   return results;
 }
 
+/**
+ * Get import history
+ * GET /admin/customers/import-history
+ */
 exports.getImportHistory = async (req, res) => {
   try {
     const userRole = req.user.role;
@@ -735,6 +713,10 @@ exports.getImportHistory = async (req, res) => {
   }
 };
 
+/**
+ * Get single import status
+ * GET /admin/customers/import-status/:id
+ */
 exports.getImportStatus = async (req, res) => {
   try {
     const { id } = req.params;
@@ -782,5 +764,4 @@ exports.getImportStatus = async (req, res) => {
 };
 
 exports.processImportRows = processImportRows;
-
 module.exports = exports;

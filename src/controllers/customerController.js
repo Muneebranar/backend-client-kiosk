@@ -331,31 +331,56 @@ exports.enableMarketingConsent = async (req, res) => {
   }
 };
 
+
 /**
- * ✅ NEW: Bulk enable marketing consent
+ * ✅ Bulk enable marketing consent for customers
  * POST /admin/customers/bulk/marketing-consent
  */
 exports.bulkEnableMarketingConsent = async (req, res) => {
   try {
-    const { businessId, enable = true } = req.body;
+    const { businessId, enable } = req.body;
 
-    if (!businessId || !mongoose.Types.ObjectId.isValid(businessId)) {
+    console.log('📤 Bulk marketing consent update:', {
+      businessId,
+      enable,
+      userRole: req.user?.role,
+      userBusinessId: req.user?.businessId
+    });
+
+    if (!businessId) {
       return res.status(400).json({
         ok: false,
-        error: 'Valid business ID is required'
+        error: 'Business ID is required'
       });
     }
 
-    // Check access
-    if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
-      if (businessId !== req.user.businessId.toString()) {
-        return res.status(403).json({
-          ok: false,
-          error: 'Access denied'
-        });
-      }
+    // Permission check
+    const isMaster = req.user.role === 'master';
+    let isOwnBusiness = false;
+    
+    if (req.user.businessId) {
+      const userBusinessId = req.user.businessId._id 
+        ? req.user.businessId._id.toString() 
+        : req.user.businessId.toString();
+      isOwnBusiness = userBusinessId === businessId;
     }
 
+    if (!isMaster && !isOwnBusiness) {
+      console.log('❌ Access denied:', {
+        isMaster,
+        isOwnBusiness,
+        userBusinessId: req.user.businessId,
+        targetBusinessId: businessId
+      });
+      return res.status(403).json({
+        ok: false,
+        error: 'Access denied - you can only manage your own business customers'
+      });
+    }
+
+    console.log('✅ Permission granted, updating customers...');
+
+    // Update all active customers
     const result = await Customer.updateMany(
       {
         businessId: businessId,
@@ -364,28 +389,35 @@ exports.bulkEnableMarketingConsent = async (req, res) => {
       },
       {
         $set: {
-          marketingConsent: enable,
-          marketingConsentDate: enable ? new Date() : null
+          marketingConsent: enable !== false, // Default to true
+          marketingConsentDate: new Date(),
+          isInvalid: false
         }
       }
     );
 
-    console.log(`✅ Bulk marketing consent update: ${result.modifiedCount} customers affected`);
+    console.log('✅ Marketing consent updated:', {
+      matched: result.matchedCount,
+      modified: result.modifiedCount
+    });
 
+    // Return success
     res.json({
       ok: true,
-      modifiedCount: result.modifiedCount,
-      message: `Marketing consent ${enable ? 'enabled' : 'disabled'} for ${result.modifiedCount} customers`
+      message: `Marketing consent ${enable !== false ? 'enabled' : 'disabled'} for ${result.modifiedCount} customers`,
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount
     });
-  } catch (err) {
-    console.error('❌ Bulk Update Error:', err);
+
+  } catch (error) {
+    console.error('❌ Bulk marketing consent error:', error);
     res.status(500).json({
       ok: false,
-      error: err.message
+      error: 'Failed to update marketing consent',
+      message: error.message
     });
   }
 };
-
 /**
  * Manually add check-in for customer
  * POST /admin/customers/:id/checkin

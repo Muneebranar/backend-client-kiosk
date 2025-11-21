@@ -20,11 +20,11 @@ const checkinLogSchema = new mongoose.Schema(
       type: String,
       default: "+1",
     },
-    status: {
-      type: String,
-      enum: ["kiosk", "checkin", "checkout", "cooldown"], // ✅ Added 'cooldown'
-      required: true,
-    },
+   status: {
+  type: String,
+  enum: ["kiosk", "checkin", "checkout", "cooldown", "api"], // ✅ Add 'api'
+  required: true,
+},
     pointsAwarded: {
       type: Number,
       default: 0,
