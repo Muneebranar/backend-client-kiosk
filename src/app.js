@@ -13,13 +13,35 @@ const app = express();
 
 // 🛡️ Security & Middleware
 app.use(helmet());
+
+// ✅ CORS configuration
+const allowedOrigins = [
+  "https://flourishing-faun-369382.netlify.app", // ✅ Your production frontend (Netlify)
+  "http://localhost:8080",
+  process.env.CLIENT_URL    // 🔧 Additional URL from environment variable
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "*", // restrict later in production
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
+// Handle preflight requests explicitly
+app.options("*", cors());
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
