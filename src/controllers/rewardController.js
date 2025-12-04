@@ -1,296 +1,569 @@
-const Reward = require("../models/Reward");
-const Business = require("../models/Business");
+// rewardController.js - COMPLETE FIXED VERSION
 
-// ✅ GET ALL REWARDS FOR A BUSINESS
-exports.getBusinessRewards = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const list = await Reward.find({ businessId: id })
-      .sort({ priority: 1, createdAt: -1 })
-      .populate("businessId", "name slug");
-    res.json({ ok: true, list });
-  } catch (err) {
-    console.error("❌ Error fetching business rewards:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
-  }
-};
+const Reward = require('../models/Reward');
+const Customer = require('../models/Customer');
+const RewardHistory = require('../models/rewardHistory');
+const Business = require('../models/Business');
 
-// ✅ ADD NEW REWARD TO BUSINESS
-exports.addBusinessReward = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { 
-      name, 
-      threshold, 
-      expirationDays, 
-      description,
-      priority = 1,
-      isActive = true,
-      discountType = 'none',
-      discountValue = 0 
-    } = req.body;
-
-    // Validate required fields
-    if (!name || !threshold) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: "Name and threshold are required" 
-      });
-    }
-
-    // Validate discount values
-    if (discountType === 'percentage' && (discountValue < 0 || discountValue > 100)) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: "Percentage discount must be between 0 and 100" 
-      });
-    }
-
-    if (discountType === 'fixed' && discountValue < 0) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: "Fixed discount must be a positive value" 
-      });
-    }
-
-    const business = await Business.findById(id);
-    if (!business) {
-      return res.status(404).json({ ok: false, error: "Business not found" });
-    }
-
-    // Check reward limit (only count templates, not customer rewards)
-    const rewardCount = await Reward.countDocuments({ 
-      businessId: id, 
-      phone: { $exists: false } 
-    });
-    
-    if (rewardCount >= 15) {
-      return res.status(400).json({
-        ok: false,
-        error: "Maximum 15 active rewards allowed per business.",
-      });
-    }
-
-    // ✅ Determine expiryDays — use given or business default
-    const expiryDays = expirationDays || business.rewardExpiryDays || null;
-
-    // ✅ Auto-calculate expiresAt from expiryDays
-    const expiresAt = expiryDays
-      ? new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000)
-      : null;
-
-    const newReward = await Reward.create({
-      businessId: id,
-      name,
-      threshold,
-      description: description || `Reward for ${business.name}`,
-      code: `RW-${Math.random().toString(36).substring(2, 10).toUpperCase()}`,
-      expiryDays,
-      expiresAt,
-      priority,
-      isActive,
-      discountType,
-      discountValue,
-    });
-
-    res.json({ ok: true, reward: newReward });
-  } catch (err) {
-    console.error("❌ Error adding reward:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
-  }
-};
-
-// ✅ UPDATE BUSINESS REWARD (FIXED - REMOVED DUPLICATE)
-exports.updateBusinessReward = async (req, res) => {
-  try {
-    const { rewardId } = req.params;
-    const { 
-      name, 
-      threshold, 
-      expirationDays, 
-      description,
-      priority,
-      isActive,
-      discountType,
-      discountValue 
-    } = req.body;
-
-    const reward = await Reward.findById(rewardId);
-    if (!reward) {
-      return res.status(404).json({ ok: false, error: "Reward not found" });
-    }
-
-    // Validate discount values if provided
-    if (discountType === 'percentage' && discountValue !== undefined) {
-      if (discountValue < 0 || discountValue > 100) {
-        return res.status(400).json({ 
-          ok: false, 
-          error: "Percentage discount must be between 0 and 100" 
-        });
-      }
-    }
-
-    if (discountType === 'fixed' && discountValue !== undefined && discountValue < 0) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: "Fixed discount must be a positive value" 
-      });
-    }
-
-    // Update fields only if provided
-    if (name !== undefined) reward.name = name;
-    if (threshold !== undefined) reward.threshold = threshold;
-    if (description !== undefined) reward.description = description;
-    if (priority !== undefined) reward.priority = priority;
-    if (isActive !== undefined) reward.isActive = isActive;
-    
-    // ✅ Update discount fields
-    if (discountType !== undefined) {
-      reward.discountType = discountType;
-      // Reset discount value if switching to 'none'
-      if (discountType === 'none') {
-        reward.discountValue = 0;
-      }
-    }
-    
-    if (discountValue !== undefined && discountType !== 'none') {
-      reward.discountValue = discountValue;
-    }
-
-    // Handle expiration
-    if (expirationDays !== undefined) {
-      reward.expiryDays = expirationDays;
-      reward.expiresAt = expirationDays
-        ? new Date(Date.now() + expirationDays * 24 * 60 * 60 * 1000)
-        : null;
-    }
-
-    await reward.save();
-
-    res.json({ ok: true, message: "Reward updated successfully", reward });
-  } catch (err) {
-    console.error("❌ Error updating reward:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
-  }
-};
-
-// ✅ DELETE REWARD
-exports.deleteBusinessReward = async (req, res) => {
-  try {
-    const { rewardId } = req.params;
-    
-    const reward = await Reward.findById(rewardId);
-    if (!reward) {
-      return res.status(404).json({ ok: false, error: "Reward not found" });
-    }
-
-    await Reward.findByIdAndDelete(rewardId);
-    res.json({ ok: true, message: "Reward deleted successfully" });
-  } catch (err) {
-    console.error("❌ Error deleting reward:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
-  }
-};
-
-// ✅ REDEEM REWARD
+/* ---------------------------------------------------
+    REDEEM REWARD - FIXED VERSION
+--------------------------------------------------- */
 exports.redeemReward = async (req, res) => {
   try {
-    const { rewardId } = req.params;
+    const { id } = req.params;
+    
+    console.log('🎁 Redeeming reward:', id);
 
-    const reward = await Reward.findById(rewardId).populate("businessId", "name");
+    if (!id) {
+      return res.status(400).json({ ok: false, error: "Reward ID is required" });
+    }
+
+    // Find the reward
+    const reward = await Reward.findById(id);
+    
     if (!reward) {
       return res.status(404).json({ ok: false, error: "Reward not found" });
     }
 
     // Check if already redeemed
     if (reward.redeemed) {
-      return res.status(400).json({ 
-        ok: false, 
-        message: "Reward already redeemed." 
-      });
+      return res.status(400).json({ ok: false, error: "Reward already redeemed" });
     }
 
     // Check if expired
-    if (reward.expiresAt && new Date() > reward.expiresAt) {
-      return res.status(400).json({ 
-        ok: false, 
-        message: "Reward has expired." 
-      });
+    if (reward.expiresAt && new Date(reward.expiresAt) < new Date()) {
+      return res.status(400).json({ ok: false, error: "Reward has expired" });
     }
 
+    // Check access permissions
+    if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
+      if (reward.businessId.toString() !== req.user.businessId.toString()) {
+        return res.status(403).json({ ok: false, error: "Access denied" });
+      }
+    }
+
+    // Find the customer and reset their check-ins to zero
+    const customer = await Customer.findOne({ 
+      phone: reward.phone, 
+      businessId: reward.businessId 
+    });
+
+    if (customer) {
+      customer.totalCheckins = 0;
+      await customer.save();
+      console.log(`🔄 Customer check-ins reset to 0 for phone: ${reward.phone}`);
+    }
+
+    // Mark as redeemed
     reward.redeemed = true;
     reward.redeemedAt = new Date();
+    reward.redeemedBy = req.user.id;
+    
     await reward.save();
+
+    // Update reward history
+    await RewardHistory.updateOne(
+      { rewardId: reward._id },
+      { 
+        status: "Redeemed",
+        redeemedAt: new Date(),
+        redeemedBy: req.user.id
+      }
+    );
+
+    console.log(`✅ Reward redeemed: ${reward.code}`);
 
     res.json({ 
       ok: true, 
       message: "Reward redeemed successfully", 
       reward,
-      discount: reward.discountType !== 'none' ? {
-        type: reward.discountType,
-        value: reward.discountValue
+      customer: customer ? {
+        phone: customer.phone,
+        totalCheckins: customer.totalCheckins
       } : null
     });
+
   } catch (err) {
-    console.error("❌ Error redeeming reward:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
+    console.error('❌ Redeem Error:', err);
+    res.status(500).json({ ok: false, error: err.message });
   }
 };
 
-// ✅ GET ACTIVE REWARDS (for customer view)
-exports.getRewards = async (req, res) => {
+/* ---------------------------------------------------
+    CREATE REWARD - FIXED TO PREVENT DUPLICATES
+--------------------------------------------------- */
+exports.createReward = async (req, res) => {
   try {
-    const now = new Date();
+    const { phone, businessId, name, description, threshold } = req.body;
 
-    const rewards = await Reward.find({
+    // Validate required fields
+    if (!phone || !businessId || !name) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: "Phone, businessId, and name are required" 
+      });
+    }
+
+    // ✅ CHECK FOR EXISTING UNREDEEMED REWARD
+    const existingReward = await Reward.findOne({
+      phone,
+      businessId,
       redeemed: false,
-      isActive: true, // Only show active rewards
       $or: [
-        { expiresAt: null },
-        { expiresAt: { $gt: now } } // only show non-expired rewards
-      ]
-    })
-      .populate("businessId", "name")
-      .sort({ priority: 1, createdAt: -1 });
-
-    res.json({ ok: true, list: rewards });
-  } catch (err) {
-    console.error("❌ Error fetching active rewards:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
-  }
-};
-
-// ✅ GET REWARD STATISTICS FOR A BUSINESS
-exports.getRewardStats = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const totalRewards = await Reward.countDocuments({ businessId: id });
-    const redeemedCount = await Reward.countDocuments({ 
-      businessId: id, 
-      redeemed: true 
-    });
-    const activeCount = await Reward.countDocuments({ 
-      businessId: id, 
-      redeemed: false,
-      isActive: true,
-      $or: [
+        { expiresAt: { $exists: false } },
         { expiresAt: null },
         { expiresAt: { $gt: new Date() } }
       ]
     });
 
-    res.json({ 
-      ok: true, 
-      stats: {
-        total: totalRewards,
-        redeemed: redeemedCount,
-        active: activeCount,
-        redemptionRate: totalRewards > 0 ? (redeemedCount / totalRewards * 100).toFixed(2) : 0
-      }
+    if (existingReward) {
+      console.log('⚠️ Customer already has an active reward:', existingReward.code);
+      return res.status(400).json({
+        ok: false,
+        error: "Customer already has an active reward that hasn't been redeemed yet",
+        existingReward: {
+          code: existingReward.code,
+          name: existingReward.name,
+          expiresAt: existingReward.expiresAt
+        }
+      });
+    }
+
+    // Generate unique reward code
+    const code = `RW-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+
+    // Calculate expiration (default 30 days)
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+
+    // Create new reward
+    const reward = new Reward({
+      phone,
+      businessId,
+      name,
+      description: description || name,
+      code,
+      threshold: threshold || 5,
+      expiresAt,
+      redeemed: false
     });
+
+    await reward.save();
+
+    // Create reward history entry
+    await RewardHistory.create({
+      rewardId: reward._id,
+      phone,
+      businessId,
+      status: "Active",
+      createdAt: new Date()
+    });
+
+    console.log(`✅ New reward created: ${code} for ${phone}`);
+
+    res.status(201).json({
+      ok: true,
+      reward,
+      message: "Reward created successfully"
+    });
+
   } catch (err) {
-    console.error("❌ Error fetching reward stats:", err);
+    console.error('❌ Create Reward Error:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+};
+
+/* ---------------------------------------------------
+    GET REWARD HISTORY - FIXED
+--------------------------------------------------- */
+exports.getRewardHistory = async (req, res) => {
+  try {
+    const histories = await RewardHistory.find()
+      .populate("businessId", "name")
+      .populate("rewardId", "name code expiresAt redeemed description threshold")
+      .populate("checkinId", "createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const formatted = histories.map((h) => {
+      const reward = h.rewardId || {};
+      const business = h.businessId || {};
+
+      // Determine current status
+      let status = h.status;
+      if (reward.redeemed) {
+        status = "Redeemed";
+      } else if (reward.expiresAt && new Date(reward.expiresAt) < new Date()) {
+        status = "Expired";
+      } else if (!status) {
+        status = "Active";
+      }
+
+      return {
+        _id: h._id,
+        business: { name: business.name || "—" },
+        phone: h.phone || "—",
+        name: reward.name || "—",
+        code: reward.code || "—",
+        issuedAt: h.createdAt || null,
+        expiresAt: reward.expiresAt || null,
+        status: status
+      };
+    });
+
+    res.json({ ok: true, list: formatted });
+  } catch (err) {
+    console.error("❌ Error fetching reward history:", err);
     res.status(500).json({ ok: false, error: "Server error" });
   }
 };
+
+/* ---------------------------------------------------
+    GET CUSTOMER BY REWARD CODE - FIXED
+--------------------------------------------------- */
+exports.getCustomerByRewardCode = async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log('🎫 Looking up reward code:', code);
+
+    if (!code || code.length < 4) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Invalid reward code'
+      });
+    }
+
+    const userRole = req.user.role;
+    const userBusinessId = req.user.businessId;
+
+    // Find reward
+    const reward = await Reward.findOne({ 
+      code: code.toUpperCase()
+    }).lean();
+
+    if (!reward) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Reward not found'
+      });
+    }
+
+    // Check if already redeemed
+    if (reward.redeemed) {
+      return res.status(400).json({
+        ok: false,
+        error: 'This reward has already been redeemed',
+        redeemedAt: reward.redeemedAt
+      });
+    }
+
+    // Check if expired
+    if (reward.expiresAt && new Date(reward.expiresAt) < new Date()) {
+      return res.status(400).json({
+        ok: false,
+        error: 'This reward has expired',
+        expiresAt: reward.expiresAt
+      });
+    }
+
+    // Check business access
+    if (userRole === 'admin') {
+      if (!userBusinessId) {
+        return res.status(403).json({
+          ok: false,
+          error: 'No business assigned to your account'
+        });
+      }
+      if (reward.businessId.toString() !== userBusinessId.toString()) {
+        return res.status(403).json({
+          ok: false,
+          error: 'Access denied'
+        });
+      }
+    }
+
+    // Find customer
+    const Customer = require('../models/Customer');
+    const customer = await Customer.findOne({
+      phone: reward.phone,
+      businessId: reward.businessId,
+      deleted: { $ne: true }
+    })
+    .populate('businessId', 'name slug rewardSettings')
+    .lean();
+
+    if (!customer) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Customer not found'
+      });
+    }
+
+    res.json({
+      ok: true,
+      customer,
+      reward
+    });
+
+  } catch (error) {
+    console.error('❌ Get Customer By Code Error:', error);
+    res.status(500).json({
+      ok: false,
+      error: 'Failed to find customer',
+      message: error.message
+    });
+  }
+};
+
+/* ---------------------------------------------------
+    GET CUSTOMER BY REWARD CODE - FIXED
+--------------------------------------------------- */
+exports.getCustomerByRewardCode = async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log('🎫 Looking up reward code:', code);
+
+    if (!code || code.length < 4) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Invalid reward code'
+      });
+    }
+
+    const userRole = req.user.role;
+    const userBusinessId = req.user.businessId;
+
+    // Find reward
+    const reward = await Reward.findOne({ 
+      code: code.toUpperCase()
+    }).lean();
+
+    if (!reward) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Reward not found'
+      });
+    }
+
+    // Check if already redeemed
+    if (reward.redeemed) {
+      return res.status(400).json({
+        ok: false,
+        error: 'This reward has already been redeemed',
+        redeemedAt: reward.redeemedAt
+      });
+    }
+
+    // Check if expired
+    if (reward.expiresAt && new Date(reward.expiresAt) < new Date()) {
+      return res.status(400).json({
+        ok: false,
+        error: 'This reward has expired',
+        expiresAt: reward.expiresAt
+      });
+    }
+
+    // Check business access
+    if (userRole === 'admin') {
+      if (!userBusinessId) {
+        return res.status(403).json({
+          ok: false,
+          error: 'No business assigned to your account'
+        });
+      }
+      if (reward.businessId.toString() !== userBusinessId.toString()) {
+        return res.status(403).json({
+          ok: false,
+          error: 'Access denied'
+        });
+      }
+    }
+
+    // Find customer
+    const customer = await Customer.findOne({
+      phone: reward.phone,
+      businessId: reward.businessId,
+      deleted: { $ne: true }
+    })
+    .populate('businessId', 'name slug rewardSettings')
+    .lean();
+
+    if (!customer) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Customer not found'
+      });
+    }
+
+    res.json({
+      ok: true,
+      customer,
+      reward
+    });
+
+  } catch (error) {
+    console.error('❌ Get Customer By Code Error:', error);
+    res.status(500).json({
+      ok: false,
+      error: 'Failed to find customer',
+      message: error.message
+    });
+  }
+};
+
+/* ---------------------------------------------------
+    GET BUSINESS REWARDS
+--------------------------------------------------- */
+exports.getBusinessRewards = async (req, res) => {
+  try {
+    const { id } = req.params; // businessId
+    
+    // Check permissions
+    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
+      return res.status(403).json({ ok: false, error: 'Access denied' });
+    }
+
+    const rewards = await Reward.find({ businessId: id })
+      .sort({ priority: 1, threshold: 1 })
+      .lean();
+
+    res.json({ ok: true, rewards });
+  } catch (error) {
+    console.error('❌ Get Business Rewards Error:', error);
+    res.status(500).json({ ok: false, error: 'Failed to fetch rewards' });
+  }
+};
+
+/* ---------------------------------------------------
+    ADD BUSINESS REWARD
+--------------------------------------------------- */
+exports.addBusinessReward = async (req, res) => {
+  try {
+    const { id } = req.params; // businessId
+    const { name, description, threshold, code, expiryDays, discountType, discountValue, priority } = req.body;
+
+    // Check permissions
+    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
+      return res.status(403).json({ ok: false, error: 'Access denied' });
+    }
+
+    // Validate required fields
+    if (!name || !threshold || !code) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Name, threshold, and code are required'
+      });
+    }
+
+    // Check for duplicate code
+    const existingCode = await Reward.findOne({ code: code.toUpperCase() });
+    if (existingCode) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Reward code already exists. Please use a unique code.'
+      });
+    }
+
+    // Calculate expiry date
+    let expiresAt = null;
+    if (expiryDays && Number(expiryDays) > 0) {
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + Number(expiryDays));
+    }
+
+    const reward = new Reward({
+      businessId: id,
+      name,
+      description: description || '',
+      threshold,
+      code: code.toUpperCase(),
+      expiryDays,
+      expiresAt,
+      discountType: discountType || 'none',
+      discountValue: discountValue || 0,
+      priority: priority || 1
+    });
+
+    await reward.save();
+
+    res.status(201).json({
+      ok: true,
+      message: 'Reward created successfully',
+      reward
+    });
+  } catch (error) {
+    console.error('❌ Add Business Reward Error:', error);
+    res.status(500).json({ ok: false, error: 'Failed to create reward' });
+  }
+};
+
+/* ---------------------------------------------------
+    UPDATE BUSINESS REWARD
+--------------------------------------------------- */
+exports.updateBusinessReward = async (req, res) => {
+  try {
+    const { id, rewardId } = req.params;
+    const updates = req.body;
+
+    // Check permissions
+    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
+      return res.status(403).json({ ok: false, error: 'Access denied' });
+    }
+
+    const reward = await Reward.findOne({ _id: rewardId, businessId: id });
+    
+    if (!reward) {
+      return res.status(404).json({ ok: false, error: 'Reward not found' });
+    }
+
+    // Update fields
+    Object.keys(updates).forEach(key => {
+      if (key !== '_id' && key !== 'businessId') {
+        reward[key] = updates[key];
+      }
+    });
+
+    await reward.save();
+
+    res.json({
+      ok: true,
+      message: 'Reward updated successfully',
+      reward
+    });
+  } catch (error) {
+    console.error('❌ Update Business Reward Error:', error);
+    res.status(500).json({ ok: false, error: 'Failed to update reward' });
+  }
+};
+
+/* ---------------------------------------------------
+    DELETE BUSINESS REWARD
+--------------------------------------------------- */
+exports.deleteBusinessReward = async (req, res) => {
+  try {
+    const { id, rewardId } = req.params;
+
+    // Check permissions
+    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
+      return res.status(403).json({ ok: false, error: 'Access denied' });
+    }
+
+    const reward = await Reward.findOneAndDelete({ _id: rewardId, businessId: id });
+    
+    if (!reward) {
+      return res.status(404).json({ ok: false, error: 'Reward not found' });
+    }
+
+    res.json({
+      ok: true,
+      message: 'Reward deleted successfully'
+    });
+  } catch (error) {
+    console.error('❌ Delete Business Reward Error:', error);
+    res.status(500).json({ ok: false, error: 'Failed to delete reward' });
+  }
+};
+
+module.exports = exports;

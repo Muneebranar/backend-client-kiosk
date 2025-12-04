@@ -59,33 +59,6 @@ exports.createMasterAdmin = async (req, res) => {
 };
 
 
-/**
- * Get all users (role-based)
- * GET /admin/users
- */
-exports.getAllUsers = async (req, res) => {
-  try {
-    let query = {};
-
-    // Admin can only see users of their business
-    if (req.user.role === "admin") {
-      query.businessId = req.user.businessId;
-    }
-
-    const users = await AdminUser.find(query)
-      .populate("businessId", "name slug")
-      .select("-password")
-      .sort({ createdAt: -1 });
-
-    res.json({
-      ok: true,
-      users,
-    });
-  } catch (err) {
-    console.error("Get Users Error:", err);
-    res.status(500).json({ error: err.message });
-  }
-};
 
 /**
  * Create new user (admin or staff)
@@ -139,95 +112,7 @@ exports.createUser = async (req, res) => {
   }
 };
 
-/**
- * Update user
- * PUT /admin/users/:id
- */
-exports.updateUser = async (req, res) => {
-  try {
-    const { name, role, businessId, isActive, permissions } = req.body;
 
-    const user = await AdminUser.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    // Permission checks
-    if (req.user.role === "admin" && user.role === "admin") {
-      return res
-        .status(403)
-        .json({ error: "Admins cannot update other admins" });
-    }
-
-    if (req.user.role === "staff") {
-      return res.status(403).json({ error: "Staff cannot update users" });
-    }
-
-    // Update fields
-    if (name) user.name = name;
-    if (isActive !== undefined) user.isActive = isActive;
-
-    // Only master can change role and businessId
-    if (req.user.role === "master") {
-      if (role) user.role = role;
-      if (businessId) user.businessId = businessId;
-      if (permissions) user.permissions = { ...user.permissions, ...permissions };
-    }
-
-    await user.save();
-
-    res.json({
-      ok: true,
-      message: "User updated successfully",
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        businessId: user.businessId,
-        isActive: user.isActive,
-        permissions: user.permissions,
-      },
-    });
-  } catch (err) {
-    console.error("Update User Error:", err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-/**
- * Delete user
- * DELETE /admin/users/:id
- */
-exports.deleteUser = async (req, res) => {
-  try {
-    const user = await AdminUser.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    // Permission checks
-    if (req.user.role === "admin" && user.role === "admin") {
-      return res
-        .status(403)
-        .json({ error: "Admins cannot delete other admins" });
-    }
-
-    if (req.user.role === "staff") {
-      return res.status(403).json({ error: "Staff cannot delete users" });
-    }
-
-    await user.deleteOne();
-
-    res.json({
-      ok: true,
-      message: "User deleted successfully",
-    });
-  } catch (err) {
-    console.error("Delete User Error:", err);
-    res.status(500).json({ error: err.message });
-  }
-};
 
 // ==========================================
 // 🏢 BUSINESS SETTINGS (Enhanced for Age Gate)
@@ -287,40 +172,6 @@ exports.updateBusinessSettings = async (req, res) => {
 };
 
 
-
-exports.assignTwilioNumber = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { twilioNumber, isActive } = req.body;
-
-    const business = await Business.findById(id);
-    if (!business) {
-      return res.status(404).json({ error: "Business not found" });
-    }
-
-    // Check access
-    if (
-      req.user.role !== "master" &&
-      business._id.toString() !== req.user.businessId.toString()
-    ) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-
-    business.twilioNumber = twilioNumber;
-    business.twilioNumberActive = isActive !== undefined ? isActive : true;
-
-    await business.save();
-
-    res.json({
-      ok: true,
-      message: "Twilio number updated successfully",
-      business,
-    });
-  } catch (err) {
-    console.error("Assign Twilio Number Error:", err);
-    res.status(500).json({ error: err.message });
-  }
-};
 
 // ==========================================
 // 📊 DASHBOARD STATS (Enhanced)
@@ -2120,84 +1971,6 @@ exports.handleInboundTwilio = async (req, res) => {
  * PUT /admin/business/:id/reward-settings
  */
 
-exports.updateRewardSettings = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const {
-      rewardThreshold,        // ✅ Check-ins needed for reward
-      checkinCooldownHours,   // ✅ Hours between check-ins
-      maxActiveRewards,
-      welcomeMessage
-    } = req.body;
-
-    const business = await Business.findById(id);
-    if (!business) {
-      return res.status(404).json({ 
-        ok: false, 
-        error: "Business not found" 
-      });
-    }
-
-    // ✅ Check permissions
-    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
-      return res.status(403).json({ 
-        ok: false, 
-        error: "Access denied" 
-      });
-    }
-
-    // ✅ Update global reward threshold
-    if (rewardThreshold !== undefined) {
-      if (rewardThreshold < 1 || rewardThreshold > 100) {
-        return res.status(400).json({
-          ok: false,
-          error: "Reward threshold must be between 1 and 100 check-ins"
-        });
-      }
-      business.rewardThreshold = rewardThreshold;
-      console.log(`✅ Reward threshold updated to ${rewardThreshold} check-ins`);
-    }
-
-    // ✅ Update cooldown hours
-    if (checkinCooldownHours !== undefined) {
-      if (checkinCooldownHours < 0.5 || checkinCooldownHours > 168) {
-        return res.status(400).json({
-          ok: false,
-          error: "Cooldown must be between 0.5 hours (30 min) and 168 hours (7 days)"
-        });
-      }
-      business.checkinCooldownHours = checkinCooldownHours;
-      console.log(`✅ Cooldown updated to ${checkinCooldownHours} hours`);
-    }
-
-    // ✅ Update other settings
-    if (maxActiveRewards !== undefined) {
-      business.maxActiveRewards = maxActiveRewards;
-    }
-    
-    if (welcomeMessage !== undefined) {
-      business.welcomeMessage = welcomeMessage;
-    }
-
-    // ✅ Note: rewardExpiryDays is always 15 (immutable)
-
-    await business.save();
-
-    console.log(`✅ Program settings updated for ${business.name}`);
-
-    res.json({ 
-      ok: true, 
-      business,
-      message: "Program settings updated successfully"
-    });
-  } catch (err) {
-    console.error("❌ Failed to update program settings:", err);
-    res.status(500).json({ 
-      ok: false, 
-      error: "Server error" 
-    });
-  }
-};
 /**
  * Get business settings (for admin panel)
  * GET /admin/business/:id
@@ -2246,72 +2019,7 @@ exports.getBusinessSettings = async (req, res) => {
     });
   }
 };
-// ✅ REDEEM A REWARD
-exports.redeemReward = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const reward = await Reward.findById(id);
-    if (!reward) return res.status(404).json({ ok: false, error: "Reward not found" });
 
-    reward.redeemed = true;
-    await reward.save();
-
-    res.json({ ok: true, reward });
-  } catch (err) {
-    console.error("❌ Error redeeming reward:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
-  }
-};
-
-
-
-
-/* ---------------------------------------------------
-   11. GET BUSINESS REWARD STATS & POINTS LEDGER
---------------------------------------------------- */
-// const Reward = require("../models/Reward");
-
-exports.getBusinessRewardsOverview = async (req, res) => {
-  try {
-    const { id } = req.params; // businessId
-
-    const business = await Business.findById(id);
-    if (!business) return res.status(404).json({ error: "Business not found" });
-
-    // 📊 Get total points + user-level data
-    const pointsLedger = await PointsLedger.find({ businessId: business._id })
-      .sort({ updatedAt: -1 })
-      .select("phoneNumber points totalCheckins lastCheckinAt hasPendingReward");
-
-    const totalPoints = pointsLedger.reduce((acc, l) => acc + (l.points || 0), 0);
-    const totalUsers = pointsLedger.length;
-
-    // 🎁 Active rewards
-    const activeRewards = await Reward.find({
-      businessId: business._id,
-      redeemed: false,
-      $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
-    }).sort({ createdAt: -1 });
-
-    res.json({
-      ok: true,
-      business: {
-        id: business._id,
-        name: business.name,
-        rewardThreshold: business.rewardThreshold,
-        checkinCooldownHours: business.checkinCooldownHours,
-        welcomeMessage: business.welcomeMessage,
-      },
-      totalUsers,
-      totalPoints,
-      pointsLedger,
-      activeRewards,
-    });
-  } catch (err) {
-    console.error("❌ Failed to fetch reward overview:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-};
 
 
 
@@ -2348,6 +2056,122 @@ exports.getPointsLedger = async (req, res) => {
 /* ---------------------------------------------------
    13. GET ALL REWARDS
 --------------------------------------------------- */
+
+
+/* ---------------------------------------------------
+    CREATE REWARD - FIXED WITH DUPLICATE PREVENTION
+--------------------------------------------------- */
+exports.createReward = async (req, res) => {
+  try {
+    const {
+      name,
+      description,
+      threshold,
+      code,
+      expiryDays,
+      discountType,
+      discountValue,
+      priority,
+      phone,
+    } = req.body;
+
+    // ✅ Ensure businessId is coming from logged-in admin/staff
+    const businessId =
+      req.user.role === "superadmin" || req.user.role === "master"
+        ? req.body.businessId
+        : req.user.businessId;
+
+    if (!businessId || !name || !threshold || !code) {
+      return res.status(400).json({
+        ok: false,
+        message: "businessId, name, threshold, and code are required.",
+      });
+    }
+
+    // ✅ Check for duplicate reward code
+    const existingCode = await Reward.findOne({ code: code.toUpperCase() });
+    if (existingCode) {
+      return res.status(400).json({
+        ok: false,
+        message: "Reward code already exists. Use a unique one.",
+      });
+    }
+
+    // ✅ If phone is provided, check for existing unredeemed reward for this customer
+    if (phone) {
+      const existingReward = await Reward.findOne({
+        phone,
+        businessId,
+        redeemed: false,
+        $or: [
+          { expiresAt: { $exists: false } },
+          { expiresAt: null },
+          { expiresAt: { $gt: new Date() } }
+        ]
+      });
+
+      if (existingReward) {
+        console.log('⚠️ Customer already has an active reward:', existingReward.code);
+        return res.status(400).json({
+          ok: false,
+          message: "Customer already has an active reward that hasn't been redeemed yet",
+          existingReward: {
+            code: existingReward.code,
+            name: existingReward.name,
+            expiresAt: existingReward.expiresAt
+          }
+        });
+      }
+    }
+
+    // ✅ Calculate expiry date
+    let expiresAt = null;
+    if (expiryDays && Number(expiryDays) > 0) {
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + Number(expiryDays));
+    }
+
+    // ✅ Create reward
+    const reward = new Reward({
+      businessId,
+      name,
+      description: description || "",
+      threshold,
+      code: code.toUpperCase(),
+      expiryDays,
+      expiresAt,
+      discountType: discountType || "none",
+      discountValue: discountValue || 0,
+      priority: priority || 1,
+      phone: phone || null,
+    });
+
+    await reward.save();
+
+    // ✅ Create reward history entry
+    await RewardHistory.create({
+      rewardId: reward._id,
+      phone: phone || null,
+      businessId,
+      status: "Active",
+      createdAt: new Date()
+    });
+
+    console.log(`✅ New reward created: ${reward.code}${phone ? ` for ${phone}` : ''}`);
+
+    res.status(201).json({
+      ok: true,
+      message: "Reward created successfully.",
+      data: reward,
+    });
+  } catch (err) {
+    console.error("❌ Error creating reward:", err);
+    res.status(500).json({ ok: false, error: "Server error", message: err.message });
+  }
+};
+/* ---------------------------------------------------
+    GET ALL REWARDS
+--------------------------------------------------- */
 exports.getAllRewards = async (req, res) => {
   try {
     let query = {};
@@ -2370,75 +2194,308 @@ exports.getAllRewards = async (req, res) => {
 };
 
 
-// 📦 Create a new Reward
-exports.createReward = async (req, res) => {
+//reddem ****************************************redeem
+
+// exports.redeemReward = async (req, res) => {
+//   try {
+//     const { id } = req.params; // ✅ Changed from rewardId to id
+    
+//     console.log('🎁 Redeeming reward:', id); // ✅ Changed rewardId to id
+
+//     if (!id) { // ✅ Changed rewardId to id
+//       return res.status(400).json({ ok: false, error: "Reward ID is required" });
+//     }
+
+//     // Find the reward
+//     const reward = await Reward.findById(id); // ✅ Changed rewardId to id
+    
+//     if (!reward) {
+//       return res.status(404).json({ ok: false, error: "Reward not found" });
+//     }
+
+//     // Check if already redeemed
+//     if (reward.redeemed) {
+//       return res.status(400).json({ ok: false, error: "Reward already redeemed" });
+//     }
+
+//     // Check if expired
+//     if (reward.expiresAt && new Date(reward.expiresAt) < new Date()) {
+//       return res.status(400).json({ ok: false, error: "Reward has expired" });
+//     }
+
+//     // Check access permissions
+//     if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
+//       if (reward.businessId.toString() !== req.user.businessId.toString()) {
+//         return res.status(403).json({ ok: false, error: "Access denied" });
+//       }
+//     }
+
+//     // ✅ Find the customer and reset their check-ins to zero
+//     const customer = await Customer.findOne({ 
+//       phone: reward.phone, 
+//       businessId: reward.businessId 
+//     });
+
+//     if (customer) {
+//       customer.totalCheckins = 0;
+//       await customer.save();
+//       console.log(`🔄 Customer check-ins reset to 0 for phone: ${reward.phone}`);
+//     }
+
+//     // Mark as redeemed
+//     reward.redeemed = true;
+//     reward.redeemedAt = new Date();
+//     reward.redeemedBy = req.user.id;
+    
+//     await reward.save();
+
+//     // Update reward history
+//     await RewardHistory.updateOne(
+//       { rewardId: reward._id },
+//       { 
+//         status: "Redeemed",
+//         redeemedAt: new Date(),
+//         redeemedBy: req.user.id
+//       }
+//     );
+
+//     console.log(`✅ Reward redeemed: ${reward.code}`);
+
+//     res.json({ 
+//       ok: true, 
+//       message: "Reward redeemed successfully", 
+//       reward,
+//       customer: customer ? {
+//         phone: customer.phone,
+//         totalCheckins: customer.totalCheckins
+//       } : null
+//     });
+
+//   } catch (err) {
+//     console.error('❌ Redeem Error:', err);
+//     res.status(500).json({ ok: false, error: err.message });
+//   }
+// };
+
+
+/* ---------------------------------------------------
+    GET REWARD HISTORY
+--------------------------------------------------- */
+exports.getRewardHistory = async (req, res) => {
   try {
-    const {
-      name,
-      description,
-      threshold,
-      code,
-      expiryDays,
-      discountType,
-      discountValue,
-      priority,
-    } = req.body;
-
-    // ✅ Ensure businessId is coming from logged-in admin/staff
-    const businessId =
-      req.user.role === "superadmin"
-        ? req.body.businessId
-        : req.user.businessId;
-
-    if (!businessId || !name || !threshold || !code) {
-      return res.status(400).json({
-        ok: false,
-        message: "businessId, name, threshold, and code are required.",
-      });
+    let query = {};
+    
+    // Filter by business for non-master users
+    if (req.user.role === 'admin' || req.user.role === 'staff') {
+      query.businessId = req.user.businessId;
     }
 
-    // ✅ Check for duplicate reward code
-    const existing = await Reward.findOne({ code });
-    if (existing) {
-      return res.status(400).json({
-        ok: false,
-        message: "Reward code already exists. Use a unique one.",
-      });
-    }
+    const histories = await RewardHistory.find(query)
+      .populate("businessId", "name")
+      .populate("rewardId", "name code expiresAt redeemed description threshold")
+      .populate("checkinId", "createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
 
-    // ✅ Calculate expiry date
-    let expiresAt = null;
-    if (expiryDays && Number(expiryDays) > 0) {
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + Number(expiryDays));
-    }
+    const formatted = histories.map((h) => {
+      const reward = h.rewardId || {};
+      const business = h.businessId || {};
 
-    // ✅ Create reward
-    const reward = new Reward({
-      businessId,
-      name,
-      description: description || "",
-      threshold,
-      code,
-      expiryDays,
-      expiresAt,
-      discountType: discountType || "none",
-      discountValue: discountValue || 0,
-      priority: priority || 1,
+      // Determine current status
+      let status = h.status;
+      if (reward.redeemed) {
+        status = "Redeemed";
+      } else if (reward.expiresAt && new Date(reward.expiresAt) < new Date()) {
+        status = "Expired";
+      } else if (!status) {
+        status = "Active";
+      }
+
+      return {
+        _id: h._id,
+        business: { name: business.name || "—" },
+        phone: h.phone || "—",
+        name: reward.name || "—",
+        code: reward.code || "—",
+        issuedAt: h.createdAt || null,
+        expiresAt: reward.expiresAt || null,
+        status: status,
+      };
     });
 
-    await reward.save();
-
-    res.status(201).json({
-      ok: true,
-      message: "Reward created successfully.",
-      data: reward,
-    });
+    res.json({ ok: true, list: formatted });
   } catch (err) {
-    console.error("❌ Error creating reward:", err);
+    console.error("❌ Error fetching reward history:", err);
     res.status(500).json({ ok: false, error: "Server error" });
   }
 };
+
+/* ---------------------------------------------------
+    GET BUSINESS REWARDS OVERVIEW
+--------------------------------------------------- */
+exports.getBusinessRewardsOverview = async (req, res) => {
+  try {
+    const { id } = req.params; // businessId
+
+    // Check permissions
+    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
+      return res.status(403).json({ 
+        ok: false, 
+        error: "Access denied" 
+      });
+    }
+
+    const business = await Business.findById(id);
+    if (!business) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: "Business not found" 
+      });
+    }
+
+    // 📊 Get total points + user-level data
+    const pointsLedger = await PointsLedger.find({ businessId: business._id })
+      .sort({ updatedAt: -1 })
+      .select("phoneNumber points totalCheckins lastCheckinAt hasPendingReward");
+
+    const totalPoints = pointsLedger.reduce((acc, l) => acc + (l.points || 0), 0);
+    const totalUsers = pointsLedger.length;
+
+    // 🎁 Active rewards (not redeemed and not expired)
+    const activeRewards = await Reward.find({
+      businessId: business._id,
+      redeemed: false,
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+    }).sort({ createdAt: -1 });
+
+    // 🎁 Count redeemed rewards
+    const redeemedCount = await Reward.countDocuments({
+      businessId: business._id,
+      redeemed: true
+    });
+
+    // 🎁 Count expired rewards
+    const expiredCount = await Reward.countDocuments({
+      businessId: business._id,
+      redeemed: false,
+      expiresAt: { $lt: new Date() }
+    });
+
+    res.json({
+      ok: true,
+      business: {
+        id: business._id,
+        name: business.name,
+        rewardThreshold: business.rewardThreshold,
+        checkinCooldownHours: business.checkinCooldownHours,
+        welcomeMessage: business.welcomeMessage,
+      },
+      totalUsers,
+      totalPoints,
+      pointsLedger,
+      activeRewards,
+      stats: {
+        active: activeRewards.length,
+        redeemed: redeemedCount,
+        expired: expiredCount,
+        total: activeRewards.length + redeemedCount + expiredCount
+      }
+    });
+  } catch (err) {
+    console.error("❌ Failed to fetch reward overview:", err);
+    res.status(500).json({ 
+      ok: false, 
+      error: "Server error",
+      message: err.message 
+    });
+  }
+};
+
+
+/* ---------------------------------------------------
+    UPDATE REWARD SETTINGS
+--------------------------------------------------- */
+exports.updateRewardSettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      rewardThreshold,        // ✅ Check-ins needed for reward
+      checkinCooldownHours,   // ✅ Hours between check-ins
+      maxActiveRewards,
+      welcomeMessage
+    } = req.body;
+
+    // Check permissions
+    if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
+      return res.status(403).json({ 
+        ok: false, 
+        error: "Access denied" 
+      });
+    }
+
+    const business = await Business.findById(id);
+    if (!business) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: "Business not found" 
+      });
+    }
+
+    // ✅ Update global reward threshold
+    if (rewardThreshold !== undefined) {
+      if (rewardThreshold < 1 || rewardThreshold > 100) {
+        return res.status(400).json({
+          ok: false,
+          error: "Reward threshold must be between 1 and 100 check-ins"
+        });
+      }
+      business.rewardThreshold = rewardThreshold;
+      console.log(`✅ Reward threshold updated to ${rewardThreshold} check-ins`);
+    }
+
+    // ✅ Update cooldown hours
+    if (checkinCooldownHours !== undefined) {
+      if (checkinCooldownHours < 0.5 || checkinCooldownHours > 168) {
+        return res.status(400).json({
+          ok: false,
+          error: "Cooldown must be between 0.5 hours (30 min) and 168 hours (7 days)"
+        });
+      }
+      business.checkinCooldownHours = checkinCooldownHours;
+      console.log(`✅ Cooldown updated to ${checkinCooldownHours} hours`);
+    }
+
+    // ✅ Update other settings
+    if (maxActiveRewards !== undefined) {
+      business.maxActiveRewards = maxActiveRewards;
+    }
+    
+    if (welcomeMessage !== undefined) {
+      business.welcomeMessage = welcomeMessage;
+    }
+
+    await business.save();
+
+    console.log(`✅ Program settings updated for ${business.name}`);
+
+    res.json({ 
+      ok: true, 
+      business,
+      message: "Program settings updated successfully"
+    });
+  } catch (err) {
+    console.error("❌ Failed to update program settings:", err);
+    res.status(500).json({ 
+      ok: false, 
+      error: "Server error",
+      message: err.message
+    });
+  }
+};
+
+
+
+
 /**
  * Get dashboard statistics (customers, rewards, check-ins)
  * GET /admin/dashboard-stats
@@ -2703,49 +2760,6 @@ exports.getCheckinSummary = async (req, res) => {
 
 
 
-/* ---------------------------------------------------
-   14. GET REWARD HISTORY
---------------------------------------------------- */
-// controllers/rewardHistoryController.js
-exports.getRewardHistory = async (req, res) => {
-  try {
-    const histories = await RewardHistory.find()
-      .populate("businessId", "name")
-      .populate("rewardId", "name code expiresAt redeemed description threshold")
-      .populate("checkinId", "createdAt")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const formatted = histories.map((h) => {
-      const reward = h.rewardId || {};
-      const business = h.businessId || {};
-
-      // ✅ Final shape (frontend-ready)
-      return {
-        _id: h._id,
-        business: { name: business.name || "—" }, // ✅ fix this line        
-        phone: h.phone || "—",
-        name: reward.name || "—",
-        code: reward.code || "—",
-        issuedAt: h.createdAt || null,
-        expiresAt: reward.expiresAt || null,
-        status:
-          h.status ||
-          (reward.redeemed
-            ? "Redeemed"
-            : reward.expiresAt && new Date(reward.expiresAt) < new Date()
-            ? "Expired"
-            : "Active"),
-      };
-    });
-
-    res.json({ ok: true, list: formatted });
-  } catch (err) {
-    console.error("❌ Error fetching reward history:", err);
-    res.status(500).json({ ok: false, error: "Server error" });
-  }
-};
-
 
 
 
@@ -2790,85 +2804,5 @@ exports.getBusinessCheckins = async (req, res) => {
   }
 };
 
-exports.redeemReward = async (req, res) => {
-  try {
-    const { id } = req.params; // ✅ Changed from rewardId to id
-    
-    console.log('🎁 Redeeming reward:', id); // ✅ Changed rewardId to id
-
-    if (!id) { // ✅ Changed rewardId to id
-      return res.status(400).json({ ok: false, error: "Reward ID is required" });
-    }
-
-    // Find the reward
-    const reward = await Reward.findById(id); // ✅ Changed rewardId to id
-    
-    if (!reward) {
-      return res.status(404).json({ ok: false, error: "Reward not found" });
-    }
-
-    // Check if already redeemed
-    if (reward.redeemed) {
-      return res.status(400).json({ ok: false, error: "Reward already redeemed" });
-    }
-
-    // Check if expired
-    if (reward.expiresAt && new Date(reward.expiresAt) < new Date()) {
-      return res.status(400).json({ ok: false, error: "Reward has expired" });
-    }
-
-    // Check access permissions
-    if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
-      if (reward.businessId.toString() !== req.user.businessId.toString()) {
-        return res.status(403).json({ ok: false, error: "Access denied" });
-      }
-    }
-
-    // ✅ Find the customer and reset their check-ins to zero
-    const customer = await Customer.findOne({ 
-      phone: reward.phone, 
-      businessId: reward.businessId 
-    });
-
-    if (customer) {
-      customer.totalCheckins = 0;
-      await customer.save();
-      console.log(`🔄 Customer check-ins reset to 0 for phone: ${reward.phone}`);
-    }
-
-    // Mark as redeemed
-    reward.redeemed = true;
-    reward.redeemedAt = new Date();
-    reward.redeemedBy = req.user.id;
-    
-    await reward.save();
-
-    // Update reward history
-    await RewardHistory.updateOne(
-      { rewardId: reward._id },
-      { 
-        status: "Redeemed",
-        redeemedAt: new Date(),
-        redeemedBy: req.user.id
-      }
-    );
-
-    console.log(`✅ Reward redeemed: ${reward.code}`);
-
-    res.json({ 
-      ok: true, 
-      message: "Reward redeemed successfully", 
-      reward,
-      customer: customer ? {
-        phone: customer.phone,
-        totalCheckins: customer.totalCheckins
-      } : null
-    });
-
-  } catch (err) {
-    console.error('❌ Redeem Error:', err);
-    res.status(500).json({ ok: false, error: err.message });
-  }
-};
 
 

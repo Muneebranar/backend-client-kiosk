@@ -74,11 +74,9 @@ router.put("/business/:id/twilio-number", debugAuth, admin.assignTwilioNumber);
 router.delete("/business/:id", admin.deleteBusiness);
 
 // --- TWILIO NUMBERS ---
-
 router.get("/twilio-numbers", admin.getTwilioNumbers);
 router.get("/twilio-numbers/with-assignments", admin.getTwilioNumbersWithAssignments);
 router.post("/twilio-numbers", admin.addTwilioNumber);
-// Add to adminRoutes.js after your existing Twilio routes:
 
 // Twilio number sync and diagnostics
 router.get("/twilio-numbers/diagnostics", admin.getTwilioNumberDiagnostics);
@@ -101,10 +99,17 @@ router.get("/checkins/daily-stats", admin.getDailyCheckinStats);
 router.get("/checkins/summary", admin.getCheckinSummary);
 router.get("/dashboard-stats", admin.getDashboardStats);
 
-// --- REWARDS ---
+// ========================================
+// ✅ REWARDS - FIXED TO USE rewardController
+// ========================================
+// Create and list rewards (using admin controller for backward compatibility)
 router.post("/rewards", admin.createReward);
 router.get("/rewards", admin.getAllRewards);
-router.put("/rewards/:id/redeem", admin.redeemReward);
+
+// ⚠️ CRITICAL FIX: Use rewardController for redemption
+router.put("/rewards/:id/redeem", rewardController.redeemReward);
+
+// Reward history and overview
 router.get("/reward-history", admin.getRewardHistory);
 router.get("/business/:id/rewards-overview", admin.getBusinessRewardsOverview);
 router.put("/business/:id/reward-settings", admin.updateRewardSettings);
