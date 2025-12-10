@@ -18,14 +18,22 @@ console.log("✅ rewardController:", Object.keys(rewardController));
 console.log("✅ csvImportController:", Object.keys(csvImportController));
 
 // ========================================
-// PUBLIC ROUTES (BEFORE protect middleware)
+// ✅ PUBLIC ROUTES (BEFORE protect middleware)
 // ========================================
+console.log("🔓 Setting up PUBLIC routes...");
+
+// Login endpoint - MUST be public
 router.post("/login", admin.login);
+console.log("  ✅ POST /api/admin/login (public)");
+
+// Campaign webhook - MUST be public for Twilio
 router.post("/campaigns/webhook/status", campaignController.handleDeliveryStatus);
+console.log("  ✅ POST /api/admin/campaigns/webhook/status (public)");
 
 // ========================================
-// PROTECTED ROUTES (AFTER protect middleware)
+// 🔒 PROTECTED ROUTES (AFTER protect middleware)
 // ========================================
+console.log("🔒 Setting up PROTECTED routes...");
 router.use(protect);
 
 // ========================================
@@ -69,6 +77,7 @@ router.get("/business/by-slug/:slug", admin.getBusiness);
 router.get("/business/:id", admin.getBusinessById);
 router.post("/business", upload.single("logo"), admin.createBusiness);
 router.post("/business/:id/logo", upload.single("logo"), admin.uploadLogo);
+router.delete("/business/:id/logo", admin.deleteLogo);
 router.put("/business/:id", admin.updateBusiness);
 router.put("/business/:id/twilio-number", debugAuth, admin.assignTwilioNumber);
 router.delete("/business/:id", admin.deleteBusiness);
@@ -171,5 +180,7 @@ router.put("/win-back/:businessId", winBackController.updateWinBackSettings);
 router.get("/win-back/:businessId/preview", winBackController.previewWinBackAudience);
 router.post("/win-back/:businessId/trigger", winBackController.triggerWinBack);
 router.get("/win-back/:businessId/stats", winBackController.getWinBackStats);
+
+console.log("✅ Admin routes configured successfully");
 
 module.exports = router;

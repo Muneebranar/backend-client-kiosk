@@ -311,9 +311,9 @@ exports.checkin = async (req, res) => {
               let rewardMsg = '';
               
               if (rewardTemplate.discountType === 'fixed') {
-                rewardMsg = `🎉 Congratulations! Show this text and receive $${rewardTemplate.discountValue} OFF any food purchase! Use code ${rewardCode}. Expires ${expiryDate}.`;
+                rewardMsg = `🎉 Congratulations! Show this text and receive $${rewardTemplate.discountValue} OFF any purchase! Use code ${rewardCode}. Expires ${expiryDate}.`;
               } else if (rewardTemplate.discountType === 'percentage') {
-                rewardMsg = `🎉 Congratulations! Show this text and receive ${rewardTemplate.discountValue}% OFF any food purchase! Use code ${rewardCode}. Expires ${expiryDate}.`;
+                rewardMsg = `🎉 Congratulations! Show this text and receive ${rewardTemplate.discountValue}% OFF any purchase! Use code ${rewardCode}. Expires ${expiryDate}.`;
               } else {
                 rewardMsg = `🎉 Congratulations! Show this text and receive your ${rewardTemplate.name}! Use code ${rewardCode}. Expires ${expiryDate}.`;
               }
@@ -343,17 +343,17 @@ exports.checkin = async (req, res) => {
               
               if (nextRewardAt === 1) {
                 if (rewardTemplate.discountType === 'fixed') {
-                  progressMsg = `Thanks for checking in! Only 1 more check-in to receive $${rewardTemplate.discountValue} OFF any food purchase!`;
+                  progressMsg = `Thanks for checking in! Only 1 more check-in to receive $${rewardTemplate.discountValue} OFF any purchase!`;
                 } else if (rewardTemplate.discountType === 'percentage') {
-                  progressMsg = `Thanks for checking in! Only 1 more check-in to receive ${rewardTemplate.discountValue}% OFF any food purchase!`;
+                  progressMsg = `Thanks for checking in! Only 1 more check-in to receive ${rewardTemplate.discountValue}% OFF any purchase!`;
                 } else {
                   progressMsg = `Thanks for checking in! Only 1 more check-in to receive your ${rewardTemplate.name}!`;
                 }
               } else {
                 if (rewardTemplate.discountType === 'fixed') {
-                  progressMsg = `Thanks for checking in! Only ${nextRewardAt} more check-ins to receive $${rewardTemplate.discountValue} OFF any food purchase!`;
+                  progressMsg = `Thanks for checking in! Only ${nextRewardAt} more check-ins to receive $${rewardTemplate.discountValue} OFF any purchase!`;
                 } else if (rewardTemplate.discountType === 'percentage') {
-                  progressMsg = `Thanks for checking in! Only ${nextRewardAt} more check-ins to receive ${rewardTemplate.discountValue}% OFF any food purchase!`;
+                  progressMsg = `Thanks for checking in! Only ${nextRewardAt} more check-ins to receive ${rewardTemplate.discountValue}% OFF any purchase!`;
                 } else {
                   progressMsg = `Thanks for checking in! Only ${nextRewardAt} more check-ins to receive your ${rewardTemplate.name}!`;
                 }
