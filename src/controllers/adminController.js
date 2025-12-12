@@ -315,12 +315,22 @@ exports.login = async (req, res) => {
 
     // ✅ CASE 1: Default admin (master)
     if (email === DEFAULT_ADMIN_EMAIL && password === DEFAULT_ADMIN_PASSWORD) {
-      // Sign token with role 'master'
+      // Generate token with current time
+      const currentTime = Math.floor(Date.now() / 1000); // Current Unix timestamp
+      
       const token = jwt.sign(
-        { id: "default-admin", role: "master" }, 
+        { 
+          id: "default-admin", 
+          role: "master",
+          iat: currentTime,  // Issued at: now
+        }, 
         JWT_SECRET, 
-        { expiresIn: "7d" }
+        { expiresIn: "7d" }  // This will add 7 days to iat
       );
+
+      console.log('✅ Master admin login - Token generated');
+      console.log('📅 Current time:', new Date().toISOString());
+      console.log('🔑 Token payload:', jwt.decode(token));
 
       return res.status(200).json({
         ok: true,
@@ -330,7 +340,7 @@ exports.login = async (req, res) => {
           id: "default-admin",
           name: "Admin",
           email: DEFAULT_ADMIN_EMAIL,
-          role: "master", // ✅ Master admin role
+          role: "master",
           lastLogin: new Date(),
         },
       });
@@ -338,11 +348,13 @@ exports.login = async (req, res) => {
 
     // ✅ CASE 2: Database users (admin/staff)
     const user = await AdminUser.findOne({ email }).populate("businessId", "name");
+    
     if (!user) {
       return res.status(404).json({ ok: false, error: "User not found" });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
+    
     if (!isMatch) {
       return res.status(401).json({ ok: false, error: "Invalid password" });
     }
@@ -351,15 +363,28 @@ exports.login = async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
-    // ✅ Generate JWT
-    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+    // ✅ Generate JWT with current time
+    const currentTime = Math.floor(Date.now() / 1000);
+    
+    const token = jwt.sign(
+      { 
+        id: user._id, 
+        role: user.role,
+        iat: currentTime
+      }, 
+      JWT_SECRET, 
+      { expiresIn: "7d" }
+    );
+
+    console.log('✅ Database user login:', user.email);
+    console.log('📅 Current time:', new Date().toISOString());
 
     // ✅ Extract businessId and businessName properly
     const businessId = user.businessId?._id 
-      ? String(user.businessId._id)  // If populated, get _id
+      ? String(user.businessId._id)
       : user.businessId 
-        ? String(user.businessId)    // If not populated, convert to string
-        : undefined;                  // If null/undefined, leave undefined
+        ? String(user.businessId)
+        : undefined;
 
     const businessName = user.businessId?.name || undefined;
 
@@ -371,7 +396,7 @@ exports.login = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role, // Will be 'admin' or 'staff' from database
+        role: user.role,
         businessId: businessId,
         businessName: businessName,
         lastLogin: user.lastLogin,
@@ -382,7 +407,6 @@ exports.login = async (req, res) => {
     res.status(500).json({ ok: false, error: "Server error during login" });
   }
 };
-
 
 
 // ===================================================

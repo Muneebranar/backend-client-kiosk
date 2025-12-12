@@ -107,29 +107,32 @@ router.get("/business/:id/checkins", admin.getBusinessCheckins);
 router.get("/checkins/daily-stats", admin.getDailyCheckinStats);
 router.get("/checkins/summary", admin.getCheckinSummary);
 router.get("/dashboard-stats", admin.getDashboardStats);
+// adminRoutes.js
 
-// ========================================
-// ✅ REWARDS - FIXED TO USE rewardController
-// ========================================
-// Create and list rewards (using admin controller for backward compatibility)
-router.post("/rewards", admin.createReward);
-router.get("/rewards", admin.getAllRewards);
+// ======================================== 
+// ✅ REWARDS MANAGEMENT - COMPLETE & FIXED
+// ======================================== 
 
-// ⚠️ CRITICAL FIX: Use rewardController for redemption
-router.put("/rewards/:id/redeem", rewardController.redeemReward);
+// --- DEBUG & FIX ROUTES (Add these temporarily) ---
+router.get("/business/:id/rewards/debug", rewardController.debugBusinessRewards);
+router.post("/business/:id/rewards/fix", rewardController.fixRewardsToTemplates);
 
-// Reward history and overview
-router.get("/reward-history", admin.getRewardHistory);
-router.get("/business/:id/rewards-overview", admin.getBusinessRewardsOverview);
-router.put("/business/:id/reward-settings", admin.updateRewardSettings);
-
-// --- BUSINESS REWARDS MANAGEMENT ---
+// --- TEMPLATE MANAGEMENT ---
 router.get("/business/:id/rewards", rewardController.getBusinessRewards);
 router.post("/business/:id/rewards", rewardController.addBusinessReward);
 router.put("/business/:id/rewards/:rewardId", rewardController.updateBusinessReward);
-router.put("/business/:id/rewards/:rewardId/redeem", rewardController.redeemReward);
 router.delete("/business/:id/rewards/:rewardId", rewardController.deleteBusinessReward);
 
+// --- ISSUED REWARDS & REDEMPTION ---
+router.post("/rewards", admin.createReward);  // Issues reward to customer
+router.get("/rewards", admin.getAllRewards);   // Gets all issued rewards
+router.put("/rewards/:id/redeem", rewardController.redeemReward);
+router.put("/business/:id/rewards/:rewardId/redeem", rewardController.redeemReward);
+
+// --- REWARD HISTORY ---
+router.get("/reward-history", admin.getRewardHistory);
+router.get("/business/:id/rewards-overview", admin.getBusinessRewardsOverview);
+router.put("/business/:id/reward-settings", admin.updateRewardSettings);
 // --- CSV IMPORT (Must come BEFORE general customer routes) ---
 router.get("/customers/import-history", csvImportController.getImportHistory);
 router.get("/customers/import/:id", csvImportController.getImportStatus);
