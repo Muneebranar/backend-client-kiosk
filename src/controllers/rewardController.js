@@ -437,12 +437,14 @@ exports.getBusinessRewards = async (req, res) => {
 };
 
 /* ---------------------------------------------------
-    ADD BUSINESS REWARD
+    ADD BUSINESS REWARD - FIXED VERSION
 --------------------------------------------------- */
 exports.addBusinessReward = async (req, res) => {
   try {
     const { id } = req.params; // businessId
     const { name, description, threshold, code, expiryDays, discountType, discountValue, priority } = req.body;
+
+    console.log('📝 Creating business reward:', { businessId: id, name, threshold, code });
 
     // Check permissions
     if (req.user.role === 'admin' && req.user.businessId.toString() !== id) {
@@ -450,43 +452,58 @@ exports.addBusinessReward = async (req, res) => {
     }
 
     // Validate required fields
-    if (!name || !threshold || !code) {
+    if (!name || !threshold) {
       return res.status(400).json({
         ok: false,
-        error: 'Name, threshold, and code are required'
+        error: 'Name and threshold are required'
       });
     }
 
-    // Check for duplicate code
-    const existingCode = await Reward.findOne({ code: code.toUpperCase() });
+    // Generate code if not provided
+    const rewardCode = code 
+      ? code.toUpperCase() 
+      : `RW-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+
+    // Check for duplicate code within this business only
+    const existingCode = await Reward.findOne({ 
+      code: rewardCode,
+      businessId: id,
+      phone: { $exists: false } // Only check reward templates, not issued rewards
+    });
+    
     if (existingCode) {
       return res.status(400).json({
         ok: false,
-        error: 'Reward code already exists. Please use a unique code.'
+        error: 'A reward with this code already exists for your business. Please use a unique code.'
       });
     }
 
-    // Calculate expiry date
+    // Calculate expiry date if provided
     let expiresAt = null;
     if (expiryDays && Number(expiryDays) > 0) {
       expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + Number(expiryDays));
     }
 
+    // Create reward template (no phone number - this is a template, not an issued reward)
     const reward = new Reward({
       businessId: id,
       name,
       description: description || '',
-      threshold,
-      code: code.toUpperCase(),
-      expiryDays,
+      threshold: Number(threshold),
+      code: rewardCode,
+      expiryDays: expiryDays ? Number(expiryDays) : null,
       expiresAt,
       discountType: discountType || 'none',
-      discountValue: discountValue || 0,
-      priority: priority || 1
+      discountValue: discountValue ? Number(discountValue) : 0,
+      priority: priority ? Number(priority) : 1,
+      redeemed: false
+      // NO phone field - this is a reward template
     });
 
     await reward.save();
+
+    console.log('✅ Reward template created:', rewardCode);
 
     res.status(201).json({
       ok: true,
@@ -495,10 +512,13 @@ exports.addBusinessReward = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Add Business Reward Error:', error);
-    res.status(500).json({ ok: false, error: 'Failed to create reward' });
+    res.status(500).json({ 
+      ok: false, 
+      error: 'Failed to create reward',
+      details: error.message 
+    });
   }
 };
-
 /* ---------------------------------------------------
     UPDATE BUSINESS REWARD
 --------------------------------------------------- */
