@@ -8,6 +8,22 @@ const { twilioWebhook, getKioskBySlug } = require("../controllers/kioskControlle
 const { checkin } = require("../controllers/kioskController");
 const twilioValidator = require("../middleware/twilioValidator");
 
+
+
+// Add this AT THE TOP (before /:slug)
+router.get("/businesses", async (req, res) => {
+  try {
+    const businesses = await Business.find({ active: true })
+      .select("name slug logo twilioNumber twilioNumberActive")
+      .sort("name")
+      .lean();
+    
+    res.json({ ok: true, list: businesses });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: "Failed to fetch businesses" });
+  }
+});
+
 /**
  * 🧩 Kiosk Check-In Route
  * Handles user check-in from a business kiosk.

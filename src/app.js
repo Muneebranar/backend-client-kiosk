@@ -111,7 +111,7 @@ if (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "producti
 } else {
   // For strict production: Use specific origins
   const allowedOrigins = [
-    "https://flourishing-faun-369382.netlify.app",
+    // "https://flourishing-faun-369382.netlify.app",
     "http://localhost:8080",
     process.env.CLIENT_URL
   ].filter(Boolean);

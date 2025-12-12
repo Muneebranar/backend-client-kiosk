@@ -1537,7 +1537,46 @@ exports.uploadLogo = async (req, res) => {
 };
 
 
+/* ---------------------------------------------------
+   9. DELETE LOGO
+--------------------------------------------------- */
+exports.deleteLogo = async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    console.log("🗑️ Deleting logo for business:", id);
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, error: "Invalid business ID" });
+    }
+
+    const business = await Business.findById(id);
+    
+    if (!business) {
+      return res.status(404).json({ ok: false, error: "Business not found" });
+    }
+
+    // Delete logo file if exists
+    if (business.logo) {
+      const logoPath = path.join(__dirname, `../${business.logo}`);
+      if (fs.existsSync(logoPath)) {
+        fs.unlinkSync(logoPath);
+        console.log("✅ Logo file deleted:", logoPath);
+      }
+    }
+
+    // Remove logo from database
+    business.logo = null;
+    await business.save();
+
+    console.log("✅ Logo removed from business");
+
+    res.json({ ok: true, message: "Logo removed successfully" });
+  } catch (err) {
+    console.error("❌ Failed to delete logo:", err);
+    res.status(500).json({ ok: false, error: "Failed to delete logo" });
+  }
+};
 
 
 
