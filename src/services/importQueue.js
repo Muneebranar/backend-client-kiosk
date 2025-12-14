@@ -17,7 +17,7 @@ const DEFAULT_CHECKINS = 3;
 const WELCOME_BATCH_SIZE = 50;
 const WELCOME_DELAY = 500;
 
-// 🔧 FIXED: Redis Configuration with Better TLS Handling
+// 🔧 Redis Configuration
 const getRedisConfig = () => {
   logger.debug('Checking Redis configuration...');
   logger.debug('REDIS_HOST:', process.env.REDIS_HOST);
@@ -56,13 +56,11 @@ const getRedisConfig = () => {
 
     // Handle authentication
     if (process.env.REDIS_PASSWORD) {
-      // Redis 6.0+ supports username + password
       if (process.env.REDIS_USERNAME) {
         logger.redis('Using username + password authentication');
         config.username = process.env.REDIS_USERNAME;
         config.password = process.env.REDIS_PASSWORD;
       } else {
-        // Older Redis versions use only password
         logger.redis('Using password-only authentication');
         config.password = process.env.REDIS_PASSWORD;
       }
@@ -70,7 +68,7 @@ const getRedisConfig = () => {
       logger.redis('No authentication configured');
     }
 
-    // 🔧 ROBUST TLS HANDLING - Check multiple conditions
+    // TLS Handling
     const tlsEnabled = process.env.REDIS_TLS === 'true' || 
                        process.env.REDIS_TLS === '1' || 
                        process.env.REDIS_TLS === 'TRUE';
@@ -129,6 +127,107 @@ importQueue.on('ready', () => {
 });
 
 /**
+ * ✅ IMPROVED: Extract phone with case-insensitive column matching
+ */
+function extractPhone(row) {
+  // Case-insensitive phone column search
+  const phoneColumns = ['phone', 'Phone', 'PHONE', 'phoneNumber', 'phone_number', 'PhoneNumber', 'mobile', 'Mobile', 'cell', 'Cell'];
+  
+  for (const col of phoneColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      return String(row[col]).trim();
+    }
+  }
+
+  // Try to find any column with "phone" in the name (case-insensitive)
+  const keys = Object.keys(row);
+  for (const key of keys) {
+    if (key.toLowerCase().includes('phone')) {
+      const value = row[key];
+      if (value !== undefined && value !== null && value !== '') {
+        return String(value).trim();
+      }
+    }
+  }
+
+  // Fallback: check first column
+  const firstKey = keys[0];
+  if (firstKey && row[firstKey]) {
+    const value = String(row[firstKey]).trim();
+    if (looksLikePhone(value)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function looksLikePhone(str) {
+  if (!str) return false;
+  const cleaned = str.replace(/[\s\-\(\)]/g, '');
+  return /^[\+]?\d{10,15}$/.test(cleaned);
+}
+
+/**
+ * ✅ Extract name
+ */
+function extractName(row) {
+  const nameColumns = ['name', 'Name', 'NAME', 'customer_name', 'Customer Name', 'CustomerName', 'full_name', 'Full Name'];
+  
+  for (const col of nameColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      return String(row[col]).trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * ✅ Extract email
+ */
+function extractEmail(row) {
+  const emailColumns = ['email', 'Email', 'EMAIL', 'e-mail', 'E-mail', 'customer_email', 'Customer Email'];
+  
+  for (const col of emailColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      const value = String(row[col]).trim();
+      if (value.includes('@')) {
+        return value;
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * ✅ Extract location
+ */
+function extractLocation(row) {
+  const locationColumns = ['location', 'Location', 'LOCATION', 'city', 'City', 'address', 'Address'];
+  
+  for (const col of locationColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      return String(row[col]).trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * ✅ Extract notes
+ */
+function extractNotes(row) {
+  const notesColumns = ['notes', 'Notes', 'NOTES', 'comments', 'Comments', 'remarks', 'Remarks'];
+  
+  for (const col of notesColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      return String(row[col]).trim();
+    }
+  }
+  return '';
+}
+
+/**
  * ✅ Parse date from CSV with multiple format support
  */
 function parseDate(dateString) {
@@ -146,7 +245,8 @@ function parseDate(dateString) {
     'M/D/YYYY',
     'D/M/YYYY',
     'YYYY-MM-DD HH:mm:ss',
-    'MM/DD/YYYY HH:mm:ss'
+    'MM/DD/YYYY HH:mm:ss',
+    'MM/DD/YYYY h:mm:a'
   ];
 
   for (const format of formats) {
@@ -257,25 +357,32 @@ importQueue.process(1, async (job) => {
         const rowNumber = i + batchIdx + 2;
 
         try {
-          let phone = row.phone || row.Phone || row.PHONE || row.phoneNumber;
+          // ✅ Use improved extraction functions
+          const phone = extractPhone(row);
+          const name = extractName(row);
+          const email = extractEmail(row);
+          const location = extractLocation(row);
+          const notes = extractNotes(row);
           
           if (!phone) {
             results.skipped++;
             results.errors.push({
               row: rowNumber,
               phone: 'N/A',
-              reason: 'Missing phone number'
+              reason: 'Missing phone number',
+              data: JSON.stringify(row).substring(0, 100)
             });
             return;
           }
 
           const originalPhone = phone;
-          phone = phone.trim();
+          let cleanedPhone = phone.trim();
 
-          if (phone.startsWith('+')) {
-            phone = phone.replace(/[\s\-\(\)]/g, '');
+          // ✅ FIXED: Phone validation and normalization
+          if (cleanedPhone.startsWith('+')) {
+            cleanedPhone = cleanedPhone.replace(/[\s\-\(\)]/g, '');
             
-            if (!/^\+\d{10,15}$/.test(phone)) {
+            if (!/^\+\d{10,15}$/.test(cleanedPhone)) {
               results.skipped++;
               results.errors.push({
                 row: rowNumber,
@@ -285,65 +392,86 @@ importQueue.process(1, async (job) => {
               return;
             }
           } else {
-            phone = phone.replace(/\D/g, '');
+            // Remove all non-digits
+            cleanedPhone = cleanedPhone.replace(/\D/g, '');
             
-            if (phone.length === 10) {
-              phone = '+1' + phone;
-            } else if (phone.length === 11 && phone.startsWith('1')) {
-              phone = '+' + phone;
+            if (cleanedPhone.length === 10) {
+              cleanedPhone = '+1' + cleanedPhone; // ✅ Add +1 for 10-digit US numbers
+            } else if (cleanedPhone.length === 11 && cleanedPhone.startsWith('1')) {
+              cleanedPhone = '+' + cleanedPhone;
+            } else if (cleanedPhone.length > 10 && cleanedPhone.length <= 15) {
+              cleanedPhone = '+' + cleanedPhone; // International number
             } else {
               results.skipped++;
               results.errors.push({
                 row: rowNumber,
                 phone: originalPhone,
-                reason: 'Invalid US format'
+                reason: `Invalid phone length: ${cleanedPhone.length} digits`
               });
               return;
             }
           }
 
-          if (processedPhones.has(phone)) {
-            console.log(`⏭️ Skipping duplicate phone in CSV: ${phone}`);
+          if (processedPhones.has(cleanedPhone)) {
+            console.log(`⏭️ Skipping duplicate phone in CSV: ${cleanedPhone}`);
             results.skipped++;
             return;
           }
-          processedPhones.add(phone);
+          processedPhones.add(cleanedPhone);
 
+          // Determine country code
           let countryCode = '+1';
-          if (phone.startsWith('+92')) countryCode = '+92';
-          else if (phone.startsWith('+44')) countryCode = '+44';
-          else if (phone.startsWith('+1')) countryCode = '+1';
+          if (cleanedPhone.startsWith('+92')) countryCode = '+92';
+          else if (cleanedPhone.startsWith('+44')) countryCode = '+44';
+          else if (cleanedPhone.startsWith('+1')) countryCode = '+1';
           else {
-            const match = phone.match(/^\+(\d{1,4})/);
+            const match = cleanedPhone.match(/^\+(\d{1,4})/);
             if (match) {
               countryCode = '+' + match[1];
             }
           }
 
-          const name = row.name || row.Name || '';
-          const email = row.email || row.Email || '';
-          const notes = row.notes || row.Notes || '';
-          
           const csvSubscriberStatus = getSubscriberStatusFromCSV(row);
           const isUnsubscribedInCSV = csvSubscriberStatus === 'unsubscribed';
 
-          const lastCheckInDate = parseDate(row['Last Check-In'] || row['lastCheckIn'] || row['last_check_in']);
-          const signUpDate = parseDate(row['Sign Up Date'] || row['signUpDate'] || row['sign_up_date']);
+          // ✅ Parse dates
+          let lastCheckInDate = null;
+          let signUpDate = null;
+          
+          const lastCheckinColumns = ['Last Check-In', 'Last Checkin', 'lastCheckIn', 'last_check_in', 'LastCheckIn'];
+          const signupColumns = ['Sign Up Date', 'Signup Date', 'signUpDate', 'sign_up_date', 'SignUpDate'];
+          
+          for (const col of lastCheckinColumns) {
+            if (row[col]) {
+              lastCheckInDate = parseDate(row[col]);
+              if (lastCheckInDate) break;
+            }
+          }
+          
+          for (const col of signupColumns) {
+            if (row[col]) {
+              signUpDate = parseDate(row[col]);
+              if (signUpDate) break;
+            }
+          }
 
-          const isUSNumber = isUSPhoneNumber(phone);
+          const isUSNumber = isUSPhoneNumber(cleanedPhone);
 
           const existingCustomer = await Customer.findOne({
-            phone: phone,
+            phone: cleanedPhone,
             businessId: businessId,
             deleted: { $ne: true }
           });
 
           if (existingCustomer) {
-            existingCustomer.currentCheckIns = DEFAULT_CHECKINS;
-            existingCustomer.totalCheckins = Math.max(existingCustomer.totalCheckins || 0, DEFAULT_CHECKINS);
+            // Update existing customer
+            const currentCheckins = existingCustomer.totalCheckins || 0;
+            existingCustomer.totalCheckins = currentCheckins + DEFAULT_CHECKINS;
 
             if (lastCheckInDate) {
               existingCustomer.lastCheckinAt = lastCheckInDate;
+            } else {
+              existingCustomer.lastCheckinAt = new Date();
             }
 
             existingCustomer.subscriberStatus = csvSubscriberStatus;
@@ -352,15 +480,10 @@ importQueue.process(1, async (job) => {
               existingCustomer.metadata = {};
             }
             
-            if (name && name.trim()) {
-              existingCustomer.metadata.name = name.trim();
-            }
-            if (email && email.trim()) {
-              existingCustomer.metadata.email = email.trim();
-            }
-            if (notes && notes.trim()) {
-              existingCustomer.metadata.notes = notes.trim();
-            }
+            if (name && name.trim()) existingCustomer.metadata.name = name.trim();
+            if (email && email.trim()) existingCustomer.metadata.email = email.trim();
+            if (location && location.trim()) existingCustomer.metadata.location = location.trim();
+            if (notes && notes.trim()) existingCustomer.metadata.notes = notes.trim();
 
             await existingCustomer.save();
 
@@ -380,14 +503,14 @@ importQueue.process(1, async (job) => {
             });
 
             results.updated++;
-            console.log(`✅ Updated ${phone}: Set to ${DEFAULT_CHECKINS} check-ins (Total ever: ${existingCustomer.totalCheckins}), Status: ${csvSubscriberStatus}`);
+            console.log(`✅ Updated ${cleanedPhone}: +${DEFAULT_CHECKINS} checkins (Total: ${existingCustomer.totalCheckins})`);
 
           } else {
+            // Create new customer
             const newCustomer = await Customer.create({
-              phone: phone,
+              phone: cleanedPhone,
               countryCode: countryCode,
               businessId: businessId,
-              currentCheckIns: DEFAULT_CHECKINS,
               totalCheckins: DEFAULT_CHECKINS,
               subscriberStatus: csvSubscriberStatus,
               consentGiven: true,
@@ -397,6 +520,7 @@ importQueue.process(1, async (job) => {
               metadata: {
                 name: name || undefined,
                 email: email || undefined,
+                location: location || undefined,
                 notes: notes || undefined,
                 welcomeSent: false,
                 importedViaCSV: true,
@@ -420,7 +544,7 @@ importQueue.process(1, async (job) => {
             });
 
             results.created++;
-            console.log(`✅ Created ${phone} with ${DEFAULT_CHECKINS} check-ins (Status: ${csvSubscriberStatus})`);
+            console.log(`✅ Created ${cleanedPhone} with ${DEFAULT_CHECKINS} check-ins`);
 
             if (sendWelcome && !isUnsubscribedInCSV && isUSNumber) {
               newCustomersForWelcome.push(newCustomer);
@@ -432,7 +556,7 @@ importQueue.process(1, async (job) => {
           results.skipped++;
           results.errors.push({
             row: rowNumber,
-            phone: row.phone || 'N/A',
+            phone: extractPhone(row) || 'N/A',
             reason: err.message
           });
         }

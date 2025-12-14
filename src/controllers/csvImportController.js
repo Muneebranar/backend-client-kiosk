@@ -14,26 +14,28 @@ dayjs.extend(customParseFormat);
 const MAX_ROWS = 20000;
 const BATCH_SIZE = 100;
 const ASYNC_THRESHOLD = 1000;
-const DEFAULT_CHECKINS = 3; // ✅ Each CSV row = 3 check-in
+const DEFAULT_CHECKINS = 3;
 
 const WELCOME_BATCH_SIZE = 50;
 const WELCOME_DELAY = 500;
 
 /**
- * ✅ Detect if CSV has headers by checking first row
+ * ✅ IMPROVED: Case-insensitive header detection
  */
 function hasHeaders(firstRow) {
   if (!firstRow) return false;
   
   const keys = Object.keys(firstRow);
   
+  // If all keys are numeric indices (0, 1, 2...), no headers
   if (keys.every(k => /^\d+$/.test(k))) {
     return false;
   }
   
+  // Check for common header keywords (case-insensitive)
   const headerKeywords = [
     'phone', 'name', 'email', 'status', 'subscribed', 
-    'checkin', 'signup', 'date', 'notes', 'customer'
+    'checkin', 'signup', 'date', 'notes', 'customer', 'location', 'rewards'
   ];
   
   const hasHeaderKeywords = keys.some(key => 
@@ -44,20 +46,62 @@ function hasHeaders(firstRow) {
   
   if (hasHeaderKeywords) return true;
   
+  // Check if first value looks like data (phone number)
   const firstValue = firstRow[keys[0]];
   if (!firstValue) return false;
   
   const phonePattern = /^[\+\d\(\)\s\-]{10,}$/;
   if (phonePattern.test(String(firstValue).trim())) {
-    return false;
+    return false; // First row is data, not header
   }
   
-  return true;
+  return true; // Assume it's a header
+}
+
+/**
+ * ✅ IMPROVED: Extract phone with case-insensitive column matching
+ */
+function extractPhone(row, csvHasHeaders) {
+  if (!csvHasHeaders) {
+    return extractPhoneFromHeaderlessRow(row);
+  }
+
+  // Case-insensitive phone column search
+  const phoneColumns = ['phone', 'Phone', 'PHONE', 'phoneNumber', 'phone_number', 'PhoneNumber', 'mobile', 'Mobile', 'cell', 'Cell'];
+  
+  for (const col of phoneColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      return String(row[col]).trim();
+    }
+  }
+
+  // Try to find any column with "phone" in the name (case-insensitive)
+  const keys = Object.keys(row);
+  for (const key of keys) {
+    if (key.toLowerCase().includes('phone')) {
+      const value = row[key];
+      if (value !== undefined && value !== null && value !== '') {
+        return String(value).trim();
+      }
+    }
+  }
+
+  // Fallback: check first column
+  const firstKey = keys[0];
+  if (firstKey && row[firstKey]) {
+    const value = String(row[firstKey]).trim();
+    if (looksLikePhone(value)) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function extractPhoneFromHeaderlessRow(row) {
   const keys = Object.keys(row);
   
+  // Check first column first
   const firstKey = keys[0];
   if (firstKey && row[firstKey]) {
     const value = String(row[firstKey]).trim();
@@ -66,6 +110,7 @@ function extractPhoneFromHeaderlessRow(row) {
     }
   }
   
+  // Scan all columns
   for (const key of keys) {
     const value = String(row[key] || '').trim();
     if (looksLikePhone(value)) {
@@ -82,9 +127,29 @@ function looksLikePhone(str) {
   return /^[\+]?\d{10,15}$/.test(cleaned);
 }
 
+/**
+ * ✅ IMPROVED: Extract name with better column matching
+ */
+function extractNameFromRow(row, csvHasHeaders) {
+  if (!csvHasHeaders) {
+    return extractNameFromHeaderlessRow(row);
+  }
+
+  const nameColumns = ['name', 'Name', 'NAME', 'customer_name', 'Customer Name', 'CustomerName', 'full_name', 'Full Name'];
+  
+  for (const col of nameColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      return String(row[col]).trim();
+    }
+  }
+
+  return '';
+}
+
 function extractNameFromHeaderlessRow(row) {
   const keys = Object.keys(row);
   
+  // Assume second column is name if it exists
   if (keys[1] && row[keys[1]]) {
     const value = String(row[keys[1]]).trim();
     
@@ -99,6 +164,28 @@ function extractNameFromHeaderlessRow(row) {
   return '';
 }
 
+/**
+ * ✅ IMPROVED: Extract email with better column matching
+ */
+function extractEmailFromRow(row, csvHasHeaders) {
+  if (!csvHasHeaders) {
+    return extractEmailFromHeaderlessRow(row);
+  }
+
+  const emailColumns = ['email', 'Email', 'EMAIL', 'e-mail', 'E-mail', 'customer_email', 'Customer Email'];
+  
+  for (const col of emailColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      const value = String(row[col]).trim();
+      if (value.includes('@')) {
+        return value;
+      }
+    }
+  }
+
+  return '';
+}
+
 function extractEmailFromHeaderlessRow(row) {
   const keys = Object.keys(row);
   
@@ -106,6 +193,37 @@ function extractEmailFromHeaderlessRow(row) {
     const value = String(row[key] || '').trim();
     if (value.includes('@') && value.includes('.')) {
       return value;
+    }
+  }
+  
+  return '';
+}
+
+/**
+ * ✅ Extract location/notes
+ */
+function extractLocation(row, csvHasHeaders) {
+  if (!csvHasHeaders) return '';
+  
+  const locationColumns = ['location', 'Location', 'LOCATION', 'city', 'City', 'address', 'Address'];
+  
+  for (const col of locationColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      return String(row[col]).trim();
+    }
+  }
+  
+  return '';
+}
+
+function extractNotes(row, csvHasHeaders) {
+  if (!csvHasHeaders) return '';
+  
+  const notesColumns = ['notes', 'Notes', 'NOTES', 'comments', 'Comments', 'remarks', 'Remarks'];
+  
+  for (const col of notesColumns) {
+    if (row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      return String(row[col]).trim();
     }
   }
   
@@ -132,7 +250,7 @@ function parseDate(dateString) {
   const formats = [
     'YYYY-MM-DD', 'MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY/MM/DD',
     'MM-DD-YYYY', 'DD-MM-YYYY', 'M/D/YYYY', 'D/M/YYYY',
-    'YYYY-MM-DD HH:mm:ss', 'MM/DD/YYYY HH:mm:ss'
+    'YYYY-MM-DD HH:mm:ss', 'MM/DD/YYYY HH:mm:ss', 'MM/DD/YYYY h:mm:a'
   ];
 
   for (const format of formats) {
@@ -266,7 +384,7 @@ exports.importCustomersCSV = async (req, res) => {
     
     await new Promise((resolve, reject) => {
       bufferStream
-        .pipe(csv({ headers: false }))
+        .pipe(csv({ headers: false })) // Let csv-parser auto-detect
         .on('data', (row) => {
           if (rows.length >= MAX_ROWS) {
             return reject(new Error(`CSV exceeds maximum of ${MAX_ROWS} rows`));
@@ -278,17 +396,25 @@ exports.importCustomersCSV = async (req, res) => {
     });
 
     const totalRows = rows.length;
-    const csvHasHeaders = totalRows > 0 ? hasHeaders(rows[0]) : false;
-    console.log(`🔍 CSV: ${totalRows} rows, Headers: ${csvHasHeaders ? 'YES' : 'NO'}`);
+    console.log(`📊 Total rows parsed: ${totalRows}`);
 
-    let dataRows = rows;
-    if (!csvHasHeaders && totalRows > 0) {
-      const firstRow = rows[0];
-      const firstValue = firstRow[Object.keys(firstRow)[0]];
-      if (firstValue && !looksLikePhone(String(firstValue).trim())) {
-        dataRows = rows.slice(1);
-      }
+    if (totalRows === 0) {
+      throw new Error('CSV file is empty or could not be parsed');
     }
+
+    // Check if CSV has headers
+    const csvHasHeaders = hasHeaders(rows[0]);
+    console.log(`🔍 CSV Headers: ${csvHasHeaders ? 'YES' : 'NO'}`);
+
+    if (csvHasHeaders) {
+      console.log('📋 First row (header):', Object.keys(rows[0]).join(', '));
+    } else {
+      console.log('📋 First row (data):', Object.values(rows[0]).slice(0, 5).join(', '));
+    }
+
+    // Skip header row if present
+    const dataRows = csvHasHeaders ? rows.slice(1) : rows;
+    console.log(`📊 Data rows to process: ${dataRows.length}`);
 
     importRecord.results.totalRows = dataRows.length;
     await importRecord.save();
@@ -340,7 +466,7 @@ exports.importCustomersCSV = async (req, res) => {
 };
 
 /**
- * ⚡ Process import rows - CHECKINS ONLY (No Points)
+ * ⚡ Process import rows
  */
 async function processImportRows(rows, businessId, importRecord, sendWelcome = true, csvHasHeaders = true) {
   const results = {
@@ -367,90 +493,108 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
     const batch = rows.slice(i, Math.min(i + BATCH_SIZE, rows.length));
     
     await Promise.all(batch.map(async (row, batchIdx) => {
-      const rowNumber = i + batchIdx + 2;
+      const rowNumber = i + batchIdx + (csvHasHeaders ? 2 : 1);
 
       try {
-        let phone, name, email, notes;
-        
-        if (csvHasHeaders) {
-          phone = row.phone || row.Phone || row.PHONE || row.phoneNumber;
-          name = row.name || row.Name || '';
-          email = row.email || row.Email || '';
-          notes = row.notes || row.Notes || '';
-        } else {
-          phone = extractPhoneFromHeaderlessRow(row);
-          name = extractNameFromHeaderlessRow(row);
-          email = extractEmailFromHeaderlessRow(row);
-          notes = '';
-        }
+        // ✅ Use improved extraction functions
+        const phone = extractPhone(row, csvHasHeaders);
+        const name = extractNameFromRow(row, csvHasHeaders);
+        const email = extractEmailFromRow(row, csvHasHeaders);
+        const location = extractLocation(row, csvHasHeaders);
+        const notes = extractNotes(row, csvHasHeaders);
         
         if (!phone) {
           results.skipped++;
-          results.errors.push({ row: rowNumber, phone: 'N/A', reason: 'Missing phone number' });
+          results.errors.push({ 
+            row: rowNumber, 
+            phone: 'N/A', 
+            reason: 'Missing phone number',
+            data: JSON.stringify(row).substring(0, 100)
+          });
           return;
         }
 
         const originalPhone = phone;
-        phone = phone.trim();
+        let cleanedPhone = phone.trim();
 
-        // Phone validation and normalization
-        if (phone.startsWith('+')) {
-          phone = phone.replace(/[\s\-\(\)]/g, '');
-          if (!/^\+\d{10,15}$/.test(phone)) {
+        // ✅ FIXED: Phone validation and normalization
+        if (cleanedPhone.startsWith('+')) {
+          cleanedPhone = cleanedPhone.replace(/[\s\-\(\)]/g, '');
+          if (!/^\+\d{10,15}$/.test(cleanedPhone)) {
             results.skipped++;
             results.errors.push({ row: rowNumber, phone: originalPhone, reason: 'Invalid international format' });
             return;
           }
         } else {
-          phone = phone.replace(/\D/g, '');
-          if (phone.length === 10) {
-            phone = '+1' + phone;
-          } else if (phone.length === 11 && phone.startsWith('1')) {
-            phone = '+' + phone;
+          // Remove all non-digits
+          cleanedPhone = cleanedPhone.replace(/\D/g, '');
+          
+          if (cleanedPhone.length === 10) {
+            cleanedPhone = '+1' + cleanedPhone; // ✅ Add +1 for 10-digit US numbers
+          } else if (cleanedPhone.length === 11 && cleanedPhone.startsWith('1')) {
+            cleanedPhone = '+' + cleanedPhone;
+          } else if (cleanedPhone.length > 10 && cleanedPhone.length <= 15) {
+            cleanedPhone = '+' + cleanedPhone; // International number
           } else {
             results.skipped++;
-            results.errors.push({ row: rowNumber, phone: originalPhone, reason: 'Invalid US format' });
+            results.errors.push({ row: rowNumber, phone: originalPhone, reason: `Invalid phone length: ${cleanedPhone.length} digits` });
             return;
           }
         }
 
-        if (processedPhones.has(phone)) {
+        if (processedPhones.has(cleanedPhone)) {
+          console.log(`⏭️ Skipping duplicate: ${cleanedPhone}`);
           results.skipped++;
           return;
         }
-        processedPhones.add(phone);
+        processedPhones.add(cleanedPhone);
 
         // Determine country code
         let countryCode = '+1';
-        if (phone.startsWith('+92')) countryCode = '+92';
-        else if (phone.startsWith('+44')) countryCode = '+44';
-        else if (phone.startsWith('+1')) countryCode = '+1';
+        if (cleanedPhone.startsWith('+92')) countryCode = '+92';
+        else if (cleanedPhone.startsWith('+44')) countryCode = '+44';
+        else if (cleanedPhone.startsWith('+1')) countryCode = '+1';
         else {
-          const match = phone.match(/^\+(\d{1,4})/);
+          const match = cleanedPhone.match(/^\+(\d{1,4})/);
           if (match) countryCode = '+' + match[1];
         }
 
         const csvSubscriberStatus = getSubscriberStatusFromCSV(row, !csvHasHeaders);
         const isUnsubscribedInCSV = csvSubscriberStatus === 'unsubscribed';
 
+        // ✅ Parse dates
         let lastCheckInDate = null;
         let signUpDate = null;
         
         if (csvHasHeaders) {
-          lastCheckInDate = parseDate(row['Last Check-In'] || row['lastCheckIn'] || row['last_check_in']);
-          signUpDate = parseDate(row['Sign Up Date'] || row['signUpDate'] || row['sign_up_date']);
+          const lastCheckinColumns = ['Last Check-In', 'Last Checkin', 'lastCheckIn', 'last_check_in', 'LastCheckIn'];
+          const signupColumns = ['Sign Up Date', 'Signup Date', 'signUpDate', 'sign_up_date', 'SignUpDate'];
+          
+          for (const col of lastCheckinColumns) {
+            if (row[col]) {
+              lastCheckInDate = parseDate(row[col]);
+              if (lastCheckInDate) break;
+            }
+          }
+          
+          for (const col of signupColumns) {
+            if (row[col]) {
+              signUpDate = parseDate(row[col]);
+              if (signUpDate) break;
+            }
+          }
         }
 
-        const isUSNumber = isUSPhoneNumber(phone);
+        const isUSNumber = isUSPhoneNumber(cleanedPhone);
 
         const existingCustomer = await Customer.findOne({
-          phone: phone,
+          phone: cleanedPhone,
           businessId: businessId,
           deleted: { $ne: true }
         });
 
         if (existingCustomer) {
-          // ✅ UPDATE EXISTING CUSTOMER - CHECKINS ONLY
+          // Update existing customer
           const currentCheckins = existingCustomer.totalCheckins || 0;
           existingCustomer.totalCheckins = currentCheckins + DEFAULT_CHECKINS;
 
@@ -468,18 +612,18 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
           
           if (name && name.trim()) existingCustomer.metadata.name = name.trim();
           if (email && email.trim()) existingCustomer.metadata.email = email.trim();
+          if (location && location.trim()) existingCustomer.metadata.location = location.trim();
           if (notes && notes.trim()) existingCustomer.metadata.notes = notes.trim();
 
           await existingCustomer.save();
 
-          // ✅ Create CheckinLog with valid status
           await CheckinLog.create({
             businessId,
             customerId: existingCustomer._id,
             phone: existingCustomer.phone,
             countryCode: existingCustomer.countryCode || countryCode,
-            status: 'checkin', // ✅ Valid enum value
-            pointsAwarded: 0, // ✅ No points
+            status: 'checkin',
+            pointsAwarded: 0,
             metadata: {
               source: 'csv_import_update',
               importId: importRecord._id.toString()
@@ -488,15 +632,15 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
           });
 
           results.updated++;
-          console.log(`✅ Updated ${phone}: +${DEFAULT_CHECKINS} checkin (Total: ${existingCustomer.totalCheckins})`);
+          console.log(`✅ Updated ${cleanedPhone}: +${DEFAULT_CHECKINS} checkins (Total: ${existingCustomer.totalCheckins})`);
 
         } else {
-          // ✅ CREATE NEW CUSTOMER - CHECKINS ONLY
+          // Create new customer
           const newCustomer = await Customer.create({
-            phone: phone,
+            phone: cleanedPhone,
             countryCode: countryCode,
             businessId: businessId,
-            totalCheckins: DEFAULT_CHECKINS, // ✅ Only checkins
+            totalCheckins: DEFAULT_CHECKINS,
             subscriberStatus: csvSubscriberStatus,
             marketingConsent: true,
             consentGiven: true,
@@ -506,6 +650,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
             metadata: {
               name: name || undefined,
               email: email || undefined,
+              location: location || undefined,
               notes: notes || undefined,
               welcomeSent: false,
               importedViaCSV: true,
@@ -513,14 +658,13 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
             }
           });
 
-          // ✅ Create CheckinLog with valid status
           await CheckinLog.create({
             businessId,
             customerId: newCustomer._id,
             phone: newCustomer.phone,
             countryCode: newCustomer.countryCode,
-            status: 'checkin', // ✅ Valid enum value
-            pointsAwarded: 0, // ✅ No points
+            status: 'checkin',
+            pointsAwarded: 0,
             metadata: {
               source: 'csv_import',
               importId: importRecord._id.toString()
@@ -529,7 +673,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
           });
 
           results.created++;
-          console.log(`✅ Created ${phone} with ${DEFAULT_CHECKINS} checkin`);
+          console.log(`✅ Created ${cleanedPhone} with ${DEFAULT_CHECKINS} checkins`);
 
           if (sendWelcome && !isUnsubscribedInCSV && isUSNumber) {
             newCustomersForWelcome.push(newCustomer);
@@ -541,7 +685,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
         results.skipped++;
         results.errors.push({
           row: rowNumber,
-          phone: row.phone || row.Phone || extractPhoneFromHeaderlessRow(row) || 'N/A',
+          phone: extractPhone(row, csvHasHeaders) || 'N/A',
           reason: err.message
         });
       }
@@ -552,6 +696,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
       importRecord.progress = progress;
       importRecord.results = results;
       await importRecord.save();
+      console.log(`📊 Progress: ${progress}%`);
     }
   }
 
@@ -560,7 +705,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
     console.log(`📨 Sending welcome to ${newCustomersForWelcome.length} new US customers`);
     
     const welcomeMessage = business.messages?.welcome || 
-      `Welcome to ${business.name}! 🎉 You've been added to our loyalty program. Reply STOP to unsubscribe.`;
+      `Welcome to ${business.name}! 🎉 You've been added to our loyalty program with ${DEFAULT_CHECKINS} check-ins. Reply STOP to unsubscribe.`;
 
     const successfulCustomerIds = [];
 
@@ -597,6 +742,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
     }
   }
 
+  console.log(`✅ Import complete: ${results.created} created, ${results.updated} updated, ${results.skipped} skipped`);
   return results;
 }
 

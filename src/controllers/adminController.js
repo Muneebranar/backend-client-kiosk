@@ -373,7 +373,7 @@ exports.login = async (req, res) => {
         iat: currentTime
       }, 
       JWT_SECRET, 
-      { expiresIn: "7d" }
+      { expiresIn: "5d" }
     );
 
     console.log('✅ Database user login:', user.email);

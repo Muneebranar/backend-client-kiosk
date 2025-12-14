@@ -1,11 +1,9 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/AdminUser");
 
-// 🐛 DEBUG MODE - Set to true to ignore token expiration
-const DEBUG_MODE = true;
-
 /**
  * 🔒 Main authentication middleware
+ * Protects routes by verifying JWT and attaching user to request
  */
 async function protect(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -20,25 +18,14 @@ async function protect(req, res, next) {
   const token = authHeader.split(" ")[1];
 
   try {
-    // ✅ Verify JWT (ignore expiration in debug mode)
-    const verifyOptions = DEBUG_MODE ? { ignoreExpiration: true } : {};
-    const decoded = jwt.verify(
-      token, 
-      process.env.JWT_SECRET || "muneeb",
-      verifyOptions
-    );
+    // ✅ Verify JWT
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "fallback-secret-key");
 
     console.log("🔐 Decoded token:", {
       id: decoded.id,
       role: decoded.role,
-      iat: decoded.iat ? new Date(decoded.iat * 1000).toISOString() : 'N/A',
-      exp: decoded.exp ? new Date(decoded.exp * 1000).toISOString() : 'N/A',
-      isExpired: decoded.exp ? (Date.now() / 1000) > decoded.exp : false
+      email: decoded.email
     });
-
-    if (DEBUG_MODE && decoded.exp && (Date.now() / 1000) > decoded.exp) {
-      console.log("⚠️ DEBUG MODE: Token is expired but allowed to proceed");
-    }
 
     // ✅ CASE 1: Default admin (master admin without DB record)
     if (decoded.id === "default-admin" || decoded.role === "master") {
@@ -50,7 +37,6 @@ async function protect(req, res, next) {
         businessId: decoded.businessId,
         businessName: decoded.businessName
       };
-      console.log("✅ Master admin authenticated");
       return next();
     }
 
@@ -64,6 +50,7 @@ async function protect(req, res, next) {
       });
     }
 
+    // Attach standardized user object to request
     req.user = {
       id: user._id.toString(),
       role: user.role,
@@ -74,12 +61,11 @@ async function protect(req, res, next) {
       permissions: user.permissions || {}
     };
 
-    console.log("✅ Database user authenticated:", user.email);
     next();
   } catch (err) {
     console.error("❌ JWT verification failed:", err.message);
     
-    if (err.name === "TokenExpiredError" && !DEBUG_MODE) {
+    if (err.name === "TokenExpiredError") {
       return res.status(401).json({ 
         ok: false,
         error: "Unauthorized: Token expired" 
@@ -88,14 +74,14 @@ async function protect(req, res, next) {
     
     return res.status(401).json({ 
       ok: false,
-      error: "Unauthorized: Invalid token",
-      details: DEBUG_MODE ? err.message : undefined
+      error: "Unauthorized: Invalid token" 
     });
   }
 }
 
 /**
  * ⚡ Authorize specific roles
+ * Usage: authorizeRoles('master', 'admin')
  */
 function authorizeRoles(...roles) {
   return (req, res, next) => {
@@ -133,14 +119,18 @@ function requireMaster(req, res, next) {
 
 /**
  * 🏢 Ensure user has access to specific business
+ * For business admins: can only access their own business
+ * For master admins: can access any business
  */
 function requireBusinessAccess(req, res, next) {
   const targetBusinessId = req.params.businessId || req.body.businessId || req.query.businessId;
 
+  // Master admin has access to all businesses
   if (req.user.role === "master" || req.user.role === "superadmin") {
     return next();
   }
 
+  // Business admin must match their assigned business
   if (!req.user.businessId) {
     return res.status(403).json({ 
       ok: false,
@@ -160,13 +150,16 @@ function requireBusinessAccess(req, res, next) {
 
 /**
  * 📋 Check specific permission
+ * Usage: requirePermission('canImportCSV')
  */
 function requirePermission(permission) {
   return (req, res, next) => {
+    // Master admin has all permissions
     if (req.user.role === "master" || req.user.role === "superadmin") {
       return next();
     }
 
+    // Check if user has the specific permission
     if (!req.user.permissions || !req.user.permissions[permission]) {
       return res.status(403).json({ 
         ok: false,
@@ -179,7 +172,8 @@ function requirePermission(permission) {
 }
 
 /**
- * 🔓 Optional authentication
+ * 🔓 Optional authentication (doesn't fail if no token)
+ * Useful for routes that work for both authenticated and non-authenticated users
  */
 async function optionalAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -192,8 +186,7 @@ async function optionalAuth(req, res, next) {
   const token = authHeader.split(" ")[1];
 
   try {
-    const verifyOptions = DEBUG_MODE ? { ignoreExpiration: true } : {};
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "muneeb", verifyOptions);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "fallback-secret-key");
 
     if (decoded.id === "default-admin" || decoded.role === "master") {
       req.user = {
@@ -226,7 +219,7 @@ async function optionalAuth(req, res, next) {
 }
 
 /**
- * 📊 Rate limiting helper
+ * 📊 Rate limiting helper (for import operations)
  */
 function createRateLimiter(maxRequests = 5, windowMs = 60000) {
   const requests = new Map();
@@ -256,9 +249,13 @@ function createRateLimiter(maxRequests = 5, windowMs = 60000) {
   };
 }
 
+/**
+ * 🛡️ Legacy alias for compatibility
+ */
 const authenticateAdmin = protect;
 
 module.exports = {
+  // Primary exports
   protect,
   authorizeRoles,
   requireMaster,
@@ -266,5 +263,7 @@ module.exports = {
   requirePermission,
   optionalAuth,
   createRateLimiter,
+  
+  // Aliases for backward compatibility
   authenticateAdmin
 };
