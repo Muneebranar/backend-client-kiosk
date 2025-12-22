@@ -705,7 +705,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
     console.log(`📨 Sending welcome to ${newCustomersForWelcome.length} new US customers`);
     
     const welcomeMessage = business.messages?.welcome || 
-      `Welcome to ${business.name}! 🎉 You've been added to our loyalty program with ${DEFAULT_CHECKINS} check-ins. Reply STOP to unsubscribe.`;
+      `Hi Welcome! 🎉 You've been added to our loyalty program with ${DEFAULT_CHECKINS} check-ins. Reply STOP to unsubscribe.`;
 
     const successfulCustomerIds = [];
 

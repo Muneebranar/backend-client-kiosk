@@ -104,6 +104,7 @@ const allowedWebOrigins = [
   "https://flourishing-faun-369382.netlify.app",
   "http://localhost:8080",
   "http://localhost:3000",
+  "http://localhost:8081",
   process.env.CLIENT_URL,
 ].filter(Boolean);
 
