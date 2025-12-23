@@ -5,7 +5,6 @@ const Customer = require('../models/Customer');
 const ImportHistory = require('../models/ImportHistory');
 const CheckinLog = require('../models/CheckinLog');
 const importQueue = require('../services/importQueue');
-const twilioService = require('../services/twilioService');
 const dayjs = require('dayjs');
 const customParseFormat = require('dayjs/plugin/customParseFormat');
 
@@ -16,8 +15,7 @@ const BATCH_SIZE = 100;
 const ASYNC_THRESHOLD = 1000;
 const DEFAULT_CHECKINS = 3;
 
-const WELCOME_BATCH_SIZE = 50;
-const WELCOME_DELAY = 500;
+// ✅ REMOVED: Welcome message batch settings (no longer needed)
 
 /**
  * ✅ IMPROVED: Case-insensitive header detection
@@ -322,6 +320,7 @@ function isUSPhoneNumber(phone) {
 /**
  * Import customers from CSV file
  * POST /admin/customers/import
+ * ✅ MODIFIED: sendWelcome is now ALWAYS false
  */
 exports.importCustomersCSV = async (req, res) => {
   let importRecord = null;
@@ -330,8 +329,8 @@ exports.importCustomersCSV = async (req, res) => {
     console.log('📦 CSV Import Request:', {
       file: req.file?.originalname,
       businessId: req.body.businessId,
-      userRole: req.user?.role,
-      sendWelcome: req.body.sendWelcome
+      userRole: req.user?.role
+      // ✅ REMOVED: sendWelcome from logs
     });
 
     if (!req.file || !req.file.buffer) {
@@ -365,8 +364,7 @@ exports.importCustomersCSV = async (req, res) => {
         created: 0,
         updated: 0,
         skipped: 0,
-        welcomesSent: 0,
-        welcomesFailed: 0,
+        // ✅ REMOVED: welcomesSent and welcomesFailed fields
         errors: []
       }
     };
@@ -419,15 +417,15 @@ exports.importCustomersCSV = async (req, res) => {
     importRecord.results.totalRows = dataRows.length;
     await importRecord.save();
 
-    const sendWelcome = req.body.sendWelcome !== 'false';
+    // ✅ REMOVED: sendWelcome parameter - now ALWAYS false
 
     if (dataRows.length > ASYNC_THRESHOLD) {
       await importQueue.add({
         importId: importRecord._id.toString(),
         businessId: businessId,
         rows: dataRows,
-        sendWelcome: sendWelcome,
         hasHeaders: csvHasHeaders
+        // ✅ REMOVED: sendWelcome parameter
       }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
 
       return res.json({
@@ -439,7 +437,8 @@ exports.importCustomersCSV = async (req, res) => {
       importRecord.status = 'processing';
       await importRecord.save();
 
-      const results = await processImportRows(dataRows, businessId, importRecord, sendWelcome, csvHasHeaders);
+      // ✅ MODIFIED: Always pass false for sendWelcome
+      const results = await processImportRows(dataRows, businessId, importRecord, false, csvHasHeaders);
 
       importRecord.status = 'completed';
       importRecord.progress = 100;
@@ -467,15 +466,15 @@ exports.importCustomersCSV = async (req, res) => {
 
 /**
  * ⚡ Process import rows
+ * ✅ MODIFIED: Removed all welcome message logic
  */
-async function processImportRows(rows, businessId, importRecord, sendWelcome = true, csvHasHeaders = true) {
+async function processImportRows(rows, businessId, importRecord, sendWelcome = false, csvHasHeaders = true) {
   const results = {
     totalRows: rows.length,
     created: 0,
     updated: 0,
     skipped: 0,
-    welcomesSent: 0,
-    welcomesFailed: 0,
+    // ✅ REMOVED: welcomesSent and welcomesFailed fields
     errors: []
   };
 
@@ -484,7 +483,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
     throw new Error('Business not found');
   }
 
-  const newCustomersForWelcome = [];
+  // ✅ REMOVED: newCustomersForWelcome array
   const processedPhones = new Set();
 
   console.log(`📋 Processing ${rows.length} rows (Headers: ${csvHasHeaders ? 'YES' : 'NO'})`);
@@ -560,7 +559,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
         }
 
         const csvSubscriberStatus = getSubscriberStatusFromCSV(row, !csvHasHeaders);
-        const isUnsubscribedInCSV = csvSubscriberStatus === 'unsubscribed';
+        // ✅ REMOVED: isUnsubscribedInCSV variable (no longer needed)
 
         // ✅ Parse dates
         let lastCheckInDate = null;
@@ -585,7 +584,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
           }
         }
 
-        const isUSNumber = isUSPhoneNumber(cleanedPhone);
+        // ✅ REMOVED: isUSNumber variable (no longer needed)
 
         const existingCustomer = await Customer.findOne({
           phone: cleanedPhone,
@@ -652,9 +651,9 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
               email: email || undefined,
               location: location || undefined,
               notes: notes || undefined,
-              welcomeSent: false,
+              welcomeSent: false, // Always false now
               importedViaCSV: true,
-              isInternational: !isUSNumber
+              isInternational: !cleanedPhone.startsWith('+1')
             }
           });
 
@@ -675,9 +674,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
           results.created++;
           console.log(`✅ Created ${cleanedPhone} with ${DEFAULT_CHECKINS} checkins`);
 
-          if (sendWelcome && !isUnsubscribedInCSV && isUSNumber) {
-            newCustomersForWelcome.push(newCustomer);
-          }
+          // ✅ REMOVED: Logic to add customer to welcome message array
         }
 
       } catch (err) {
@@ -700,47 +697,7 @@ async function processImportRows(rows, businessId, importRecord, sendWelcome = t
     }
   }
 
-  // Send welcome messages
-  if (sendWelcome && newCustomersForWelcome.length > 0) {
-    console.log(`📨 Sending welcome to ${newCustomersForWelcome.length} new US customers`);
-    
-    const welcomeMessage = business.messages?.welcome || 
-      `Hi Welcome! 🎉 You've been added to our loyalty program with ${DEFAULT_CHECKINS} check-ins. Reply STOP to unsubscribe.`;
-
-    const successfulCustomerIds = [];
-
-    for (let i = 0; i < newCustomersForWelcome.length; i += WELCOME_BATCH_SIZE) {
-      const welcomeBatch = newCustomersForWelcome.slice(i, i + WELCOME_BATCH_SIZE);
-      
-      await Promise.allSettled(
-        welcomeBatch.map(async (customer) => {
-          try {
-            await twilioService.sendSMS({
-              to: customer.phone,
-              body: welcomeMessage,
-              businessId: businessId
-            });
-            successfulCustomerIds.push(customer._id);
-            results.welcomesSent++;
-          } catch (smsErr) {
-            console.error(`❌ SMS failed ${customer.phone}:`, smsErr.message);
-            results.welcomesFailed++;
-          }
-        })
-      );
-
-      if (i + WELCOME_BATCH_SIZE < newCustomersForWelcome.length) {
-        await new Promise(resolve => setTimeout(resolve, WELCOME_DELAY));
-      }
-    }
-
-    if (successfulCustomerIds.length > 0) {
-      await Customer.updateMany(
-        { _id: { $in: successfulCustomerIds } },
-        { $set: { 'metadata.welcomeSent': true, 'metadata.welcomeSentAt': new Date() } }
-      );
-    }
-  }
+  // ✅ REMOVED: Entire welcome message sending block (50+ lines removed)
 
   console.log(`✅ Import complete: ${results.created} created, ${results.updated} updated, ${results.skipped} skipped`);
   return results;
@@ -795,8 +752,6 @@ exports.getImportHistory = async (req, res) => {
           created: 0,
           updated: 0,
           skipped: 0,
-          welcomesSent: 0,
-          welcomesFailed: 0,
           errors: []
         };
       }
@@ -809,8 +764,7 @@ exports.getImportHistory = async (req, res) => {
       record.results.created = record.results.created || 0;
       record.results.updated = record.results.updated || 0;
       record.results.skipped = record.results.skipped || 0;
-      record.results.welcomesSent = record.results.welcomesSent || 0;
-      record.results.welcomesFailed = record.results.welcomesFailed || 0;
+      // ✅ REMOVED: welcomesSent and welcomesFailed from results
 
       if (typeof record.progress !== 'number') {
         record.progress = record.status === 'completed' ? 100 : 0;
