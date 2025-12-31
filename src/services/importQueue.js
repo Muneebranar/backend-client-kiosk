@@ -4,7 +4,6 @@ const Customer = require('../models/Customer');
 const Business = require('../models/Business');
 const ImportHistory = require('../models/ImportHistory');
 const CheckinLog = require('../models/CheckinLog');
-const twilioService = require('./twilioService');
 const dayjs = require('dayjs');
 const customParseFormat = require('dayjs/plugin/customParseFormat');
 const logger = require('../utils/logger');
@@ -13,9 +12,7 @@ dayjs.extend(customParseFormat);
 
 const DEFAULT_CHECKINS = 3;
 
-// ⚡ OPTIMIZED SMS SETTINGS
-const WELCOME_BATCH_SIZE = 50;
-const WELCOME_DELAY = 500;
+// 🚫 NO SMS SETTINGS NEEDED - IMPORTS NEVER SEND MESSAGES
 
 // 🔧 Redis Configuration
 const getRedisConfig = () => {
@@ -317,12 +314,13 @@ function isUSPhoneNumber(phone) {
   return phone.startsWith('+1');
 }
 
-// ⚡ OPTIMIZED: Process imports with check-in based system
+// 🚫 NO WELCOME MESSAGES - CSV IMPORTS ARE DATA ONLY
+// Welcome messages ONLY sent via kiosk check-ins
 importQueue.process(1, async (job) => {
-  const { importId, businessId, rows, sendWelcome = true } = job.data;
+  const { importId, businessId, rows } = job.data;
   
   logger.import(`Processing import job ${importId}...`);
-  logger.import(`Welcome messages enabled: ${sendWelcome}`);
+  logger.import(`🚫 CSV IMPORT - NO WELCOME MESSAGES WILL BE SENT`);
   logger.import(`Total rows to process: ${rows.length}`);
   
   const results = {
@@ -346,7 +344,6 @@ importQueue.process(1, async (job) => {
       throw new Error('Business not found');
     }
 
-    const newCustomersForWelcome = [];
     const processedPhones = new Set();
     const BATCH_SIZE = 50;
 
@@ -432,7 +429,6 @@ importQueue.process(1, async (job) => {
           }
 
           const csvSubscriberStatus = getSubscriberStatusFromCSV(row);
-          const isUnsubscribedInCSV = csvSubscriberStatus === 'unsubscribed';
 
           // ✅ Parse dates
           let lastCheckInDate = null;
@@ -544,11 +540,10 @@ importQueue.process(1, async (job) => {
             });
 
             results.created++;
-            console.log(`✅ Created ${cleanedPhone} with ${DEFAULT_CHECKINS} check-ins`);
+            console.log(`✅ Created ${cleanedPhone} with ${DEFAULT_CHECKINS} check-ins (NO SMS SENT)`);
 
-            if (sendWelcome && !isUnsubscribedInCSV && isUSNumber) {
-              newCustomersForWelcome.push(newCustomer);
-            }
+            // 🚫 COMPLETELY REMOVED - NO WELCOME MESSAGES FROM CSV IMPORTS
+            // Welcome messages ONLY happen via kiosk check-ins
           }
 
         } catch (err) {
@@ -572,75 +567,16 @@ importQueue.process(1, async (job) => {
         'results.created': results.created,
         'results.updated': results.updated,
         'results.skipped': results.skipped,
-        'results.welcomesSent': results.welcomesSent,
-        'results.welcomesFailed': results.welcomesFailed
+        'results.welcomesSent': 0, // Always 0 for imports
+        'results.welcomesFailed': 0 // Always 0 for imports
       });
       
       console.log(`📊 Progress: ${progress}% (${i + BATCH_SIZE}/${rows.length} rows processed)`);
     }
 
-    // Send welcome messages
-    if (sendWelcome && newCustomersForWelcome.length > 0) {
-      console.log(`📨 Sending welcome messages to ${newCustomersForWelcome.length} new US customers`);
-      
-      const welcomeMessage = business.messages?.welcome || 
-        `Welcome to ${business.name}! 🎉 You've been added to our loyalty program with ${DEFAULT_CHECKINS} check-ins. Reply STOP to unsubscribe.`;
-
-      const successfulCustomerIds = [];
-      const startTime = Date.now();
-
-      for (let i = 0; i < newCustomersForWelcome.length; i += WELCOME_BATCH_SIZE) {
-        const welcomeBatch = newCustomersForWelcome.slice(i, i + WELCOME_BATCH_SIZE);
-        
-        const batchResults = await Promise.allSettled(
-          welcomeBatch.map(async (customer) => {
-            try {
-              await twilioService.sendSMS({
-                to: customer.phone,
-                body: welcomeMessage,
-                businessId: businessId
-              });
-
-              successfulCustomerIds.push(customer._id);
-              results.welcomesSent++;
-              
-              return { success: true, phone: customer.phone };
-            } catch (smsErr) {
-              console.error(`❌ Failed to send welcome to ${customer.phone}:`, smsErr.message);
-              results.welcomesFailed++;
-              return { success: false, phone: customer.phone };
-            }
-          })
-        );
-
-        const batchSuccess = batchResults.filter(r => r.status === 'fulfilled' && r.value?.success).length;
-        console.log(`📊 SMS Batch ${Math.floor(i/WELCOME_BATCH_SIZE) + 1}: ${batchSuccess}/${welcomeBatch.length} sent`);
-
-        if (i + WELCOME_BATCH_SIZE < newCustomersForWelcome.length) {
-          await new Promise(resolve => setTimeout(resolve, WELCOME_DELAY));
-        }
-      }
-
-      if (successfulCustomerIds.length > 0) {
-        try {
-          const updateResult = await Customer.updateMany(
-            { _id: { $in: successfulCustomerIds } },
-            { 
-              $set: { 
-                'metadata.welcomeSent': true,
-                'metadata.welcomeSentAt': new Date()
-              }
-            }
-          );
-          console.log(`✅ Bulk updated ${updateResult.modifiedCount} customers`);
-        } catch (updateErr) {
-          console.error('❌ Failed to bulk update customers:', updateErr.message);
-        }
-      }
-
-      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-      console.log(`📨 Welcome messages complete: ${results.welcomesSent} sent, ${results.welcomesFailed} failed in ${elapsedTime}s`);
-    }
+    // 🚫 ALL WELCOME MESSAGE CODE COMPLETELY REMOVED
+    // CSV imports are data-only operations
+    // Welcome messages ONLY sent via kiosk check-ins
 
     await ImportHistory.findByIdAndUpdate(importId, {
       status: 'completed',
@@ -649,7 +585,7 @@ importQueue.process(1, async (job) => {
       completedAt: new Date()
     });
 
-    console.log(`✅ Import job ${importId} completed:`, results);
+    console.log(`✅ Import job ${importId} completed (NO SMS SENT):`, results);
 
     return results;
   
