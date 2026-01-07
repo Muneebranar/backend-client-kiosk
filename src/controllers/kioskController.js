@@ -1,9 +1,9 @@
-// ✅ OPTIMIZED Check-in Controller with Better Messaging
-// Key improvements:
-// 1. Parallel database queries for faster response
-// 2. Better SMS messages showing specific reward names
-// 3. Fixed 15-day expiration enforced
-// 4. Cleaner, more responsive flow
+// ✅ UPDATED: SMS only on first check-in and reward earned
+// Changes:
+// - Removed progress SMS after each check-in
+// - Keeps welcome SMS for first-time users
+// - Keeps reward SMS when threshold reached
+// - No SMS sent for regular check-ins
 
 const Business = require("../models/Business");
 const Customer = require("../models/Customer");
@@ -24,11 +24,7 @@ const normalizePhone = (num) => {
 
 /**
  * 📲 POST /api/kiosk/checkin
- * ✅ OPTIMIZED: Faster check-in with better messaging
- */
-/**
- * 📲 POST /api/kiosk/checkin
- * ✅ FIXED: Uses reward template threshold from database
+ * ✅ UPDATED: Only sends SMS on first check-in and reward earned
  */
 exports.checkin = async (req, res) => {
   try {
@@ -217,7 +213,7 @@ exports.checkin = async (req, res) => {
         cooldown: false,
         checkinCounted: true,
         totalCheckinsAfter: customerDoc.totalCheckins,
-        rewardThreshold: rewardThreshold // ✅ Log the threshold used
+        rewardThreshold: rewardThreshold
       }
     });
 
@@ -235,6 +231,7 @@ exports.checkin = async (req, res) => {
 
     // ✅ SEND WELCOME SMS (first-time only) - non-blocking
     if (isFirstCheckin) {
+      console.log("📱 Sending welcome SMS to new customer");
       smsPromises.push(
         sendComplianceSms(business, normalizedPhone, fromNumber)
           .then(() => {
@@ -270,7 +267,7 @@ exports.checkin = async (req, res) => {
           threshold: rewardTemplate.threshold,
           code: rewardCode,
           expiresAt: expiresAt,
-          expiryDays: 15, // Always 15 days
+          expiryDays: 15,
           redeemed: false,
           priority: rewardTemplate.priority,
           isActive: true,
@@ -298,7 +295,8 @@ exports.checkin = async (req, res) => {
           discountValue: rewardInstance.discountValue,
         };
 
-        // ✅ IMPROVED: Send reward SMS with specific details - non-blocking
+        // ✅ Send reward SMS - non-blocking
+        console.log("📱 Sending reward SMS");
         smsPromises.push(
           (async () => {
             try {
@@ -324,7 +322,7 @@ exports.checkin = async (req, res) => {
                 body: rewardMsg,
               });
 
-              console.log("📱 Reward SMS sent");
+              console.log("📱 Reward SMS sent successfully");
             } catch (err) {
               console.error("❌ Reward SMS failed:", err.message);
             }
@@ -334,44 +332,8 @@ exports.checkin = async (req, res) => {
         console.warn("⚠️ No reward template found, cannot issue reward");
       }
     } else {
-      // ✅ IMPROVED: Send progress SMS mentioning the specific reward they're earning towards
-      if (rewardTemplate && !isFirstCheckin) {
-        smsPromises.push(
-          (async () => {
-            try {
-              let progressMsg = '';
-              
-              if (nextRewardAt === 1) {
-                if (rewardTemplate.discountType === 'fixed') {
-                  progressMsg = `Thanks for checking in! Only 1 more check-in to receive $${rewardTemplate.discountValue} OFF any purchase!`;
-                } else if (rewardTemplate.discountType === 'percentage') {
-                  progressMsg = `Thanks for checking in! Only 1 more check-in to receive ${rewardTemplate.discountValue}% OFF any purchase!`;
-                } else {
-                  progressMsg = `Thanks for checking in! Only 1 more check-in to receive your ${rewardTemplate.name}!`;
-                }
-              } else {
-                if (rewardTemplate.discountType === 'fixed') {
-                  progressMsg = `Thanks for checking in! Only ${nextRewardAt} more check-ins to receive $${rewardTemplate.discountValue} OFF any purchase!`;
-                } else if (rewardTemplate.discountType === 'percentage') {
-                  progressMsg = `Thanks for checking in! Only ${nextRewardAt} more check-ins to receive ${rewardTemplate.discountValue}% OFF any purchase!`;
-                } else {
-                  progressMsg = `Thanks for checking in! Only ${nextRewardAt} more check-ins to receive your ${rewardTemplate.name}!`;
-                }
-              }
-
-              await client.messages.create({
-                to: normalizedPhone,
-                from: fromNumber,
-                body: progressMsg,
-              });
-
-              console.log("📱 Progress SMS sent");
-            } catch (err) {
-              console.error("❌ Progress SMS failed:", err.message);
-            }
-          })()
-        );
-      }
+      // ✅ REMOVED: No progress SMS sent for regular check-ins
+      console.log(`✅ Regular check-in (no SMS sent). Progress: ${nextRewardAt} more needed`);
     }
 
     // ✅ OPTIMIZATION: Don't wait for SMS to complete - respond immediately
@@ -400,7 +362,8 @@ exports.checkin = async (req, res) => {
       checkins: customerDoc.totalCheckins, 
       nextReward: nextRewardAt,
       rewardIssued: !!newReward,
-      thresholdUsed: rewardThreshold
+      thresholdUsed: rewardThreshold,
+      smsSent: isFirstCheckin || shouldIssueReward ? 'yes' : 'no'
     });
 
     res.json(response);
