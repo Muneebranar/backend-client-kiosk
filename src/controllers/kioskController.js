@@ -5,6 +5,8 @@
 // - Keeps reward SMS when threshold reached
 // - No SMS sent for regular check-ins
 
+// ✅ IMPROVED VERSION with better SMS debugging
+
 const Business = require("../models/Business");
 const Customer = require("../models/Customer");
 const CheckinLog = require("../models/CheckinLog");
@@ -24,7 +26,7 @@ const normalizePhone = (num) => {
 
 /**
  * 📲 POST /api/kiosk/checkin
- * ✅ UPDATED: Only sends SMS on first check-in and reward earned
+ * ✅ IMPROVED: Enhanced SMS debugging and error handling
  */
 exports.checkin = async (req, res) => {
   try {
@@ -69,15 +71,28 @@ exports.checkin = async (req, res) => {
       }
     }
 
-    // ✅ Check Twilio setup
+    // ✅ IMPROVED: Enhanced Twilio setup check with detailed logging
+    console.log("🔍 Twilio Configuration Check:", {
+      businessName: business.name,
+      businessId: business._id,
+      twilioNumber: business.twilioNumber,
+      twilioNumberActive: business.twilioNumberActive,
+      defaultNumber: process.env.DEFAULT_TWILIO_NUMBER,
+      twilioClientExists: !!client
+    });
+
     if (!business.twilioNumberActive) {
+      console.error("❌ Twilio not active for business:", business.name);
       return res.status(503).json({ ok: false, error: "SMS service unavailable" });
     }
 
     const fromNumber = business.twilioNumber || process.env.DEFAULT_TWILIO_NUMBER;
     if (!fromNumber) {
+      console.error("❌ No Twilio number configured");
       return res.status(500).json({ ok: false, error: "SMS not configured" });
     }
+
+    console.log("📞 Using Twilio number:", fromNumber);
 
     // ✅ Status checks
     if (existingCustomer?.subscriberStatus === 'blocked') {
@@ -227,27 +242,56 @@ exports.checkin = async (req, res) => {
     console.log(`🔍 Reward check: checkins=${customerDoc.totalCheckins}, threshold=${rewardThreshold}, shouldIssue=${shouldIssueReward}`);
 
     let newReward = null;
-    let smsPromises = [];
+    let smsResults = {
+      welcome: { attempted: false, success: false, error: null },
+      reward: { attempted: false, success: false, error: null }
+    };
 
-    // ✅ SEND WELCOME SMS (first-time only) - non-blocking
+    // ✅ IMPROVED: Send welcome SMS with better error handling
     if (isFirstCheckin) {
-      console.log("📱 Sending welcome SMS to new customer");
-      smsPromises.push(
-        sendComplianceSms(business, normalizedPhone, fromNumber)
-          .then(() => {
-            const welcomeMsg = business.welcomeMessage || 
-              `Welcome to ${business.name}! Thanks for checking in.`;
-            return client.messages.create({
-              to: normalizedPhone,
-              from: fromNumber,
-              body: welcomeMsg,
-            });
-          })
-          .catch(err => console.error("❌ Welcome SMS failed:", err.message))
-      );
+      console.log("📱 Attempting to send welcome SMS to new customer");
+      smsResults.welcome.attempted = true;
+      
+      try {
+        // Send compliance SMS first
+        console.log("📋 Sending compliance SMS...");
+        await sendComplianceSms(business, normalizedPhone, fromNumber);
+        console.log("✅ Compliance SMS sent");
+        
+        // Then send welcome message
+        const welcomeMsg = business.welcomeMessage || 
+          `Welcome to ${business.name}! Thanks for checking in.`;
+        
+        console.log("📨 Sending welcome message:", {
+          to: normalizedPhone,
+          from: fromNumber,
+          messagePreview: welcomeMsg.substring(0, 50) + "..."
+        });
+        
+        const welcomeResult = await client.messages.create({
+          to: normalizedPhone,
+          from: fromNumber,
+          body: welcomeMsg,
+        });
+        
+        console.log("✅ Welcome SMS sent successfully:", {
+          sid: welcomeResult.sid,
+          status: welcomeResult.status
+        });
+        smsResults.welcome.success = true;
+        
+      } catch (err) {
+        console.error("❌ Welcome SMS failed:", {
+          error: err.message,
+          code: err.code,
+          status: err.status,
+          moreInfo: err.moreInfo
+        });
+        smsResults.welcome.error = err.message;
+      }
     }
 
-    // ✅ ISSUE REWARD IF THRESHOLD REACHED
+    // ✅ IMPROVED: Issue reward with better error handling
     if (shouldIssueReward) {
       console.log(`🎉 Reward threshold reached! ${customerDoc.totalCheckins} check-ins`);
       
@@ -295,51 +339,65 @@ exports.checkin = async (req, res) => {
           discountValue: rewardInstance.discountValue,
         };
 
-        // ✅ Send reward SMS - non-blocking
-        console.log("📱 Sending reward SMS");
-        smsPromises.push(
-          (async () => {
-            try {
-              const expiryDate = expiresAt.toLocaleDateString('en-US', { 
-                month: 'short', 
-                day: 'numeric', 
-                year: 'numeric' 
-              });
+        // ✅ IMPROVED: Send reward SMS with better error handling
+        console.log("📱 Attempting to send reward SMS");
+        smsResults.reward.attempted = true;
+        
+        try {
+          const expiryDate = expiresAt.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric', 
+            year: 'numeric' 
+          });
 
-              let rewardMsg = '';
-              
-              if (rewardTemplate.discountType === 'fixed') {
-                rewardMsg = `🎉 Congratulations! Show this text and receive $${rewardTemplate.discountValue} OFF any purchase! Use code ${rewardCode}. Expires ${expiryDate}.`;
-              } else if (rewardTemplate.discountType === 'percentage') {
-                rewardMsg = `🎉 Congratulations! Show this text and receive ${rewardTemplate.discountValue}% OFF any purchase! Use code ${rewardCode}. Expires ${expiryDate}.`;
-              } else {
-                rewardMsg = `🎉 Congratulations! Show this text and receive your ${rewardTemplate.name}! Use code ${rewardCode}. Expires ${expiryDate}.`;
-              }
+          let rewardMsg = '';
+          
+          if (rewardTemplate.discountType === 'fixed') {
+            rewardMsg = `🎉 Congratulations! Show this text and receive $${rewardTemplate.discountValue} OFF any purchase! Use code ${rewardCode}. Expires ${expiryDate}.`;
+          } else if (rewardTemplate.discountType === 'percentage') {
+            rewardMsg = `🎉 Congratulations! Show this text and receive ${rewardTemplate.discountValue}% OFF any purchase! Use code ${rewardCode}. Expires ${expiryDate}.`;
+          } else {
+            rewardMsg = `🎉 Congratulations! Show this text and receive your ${rewardTemplate.name}! Use code ${rewardCode}. Expires ${expiryDate}.`;
+          }
 
-              await client.messages.create({
-                to: normalizedPhone,
-                from: fromNumber,
-                body: rewardMsg,
-              });
+          console.log("📨 Sending reward message:", {
+            to: normalizedPhone,
+            from: fromNumber,
+            messagePreview: rewardMsg.substring(0, 50) + "..."
+          });
 
-              console.log("📱 Reward SMS sent successfully");
-            } catch (err) {
-              console.error("❌ Reward SMS failed:", err.message);
-            }
-          })()
-        );
+          const rewardResult = await client.messages.create({
+            to: normalizedPhone,
+            from: fromNumber,
+            body: rewardMsg,
+          });
+
+          console.log("✅ Reward SMS sent successfully:", {
+            sid: rewardResult.sid,
+            status: rewardResult.status
+          });
+          smsResults.reward.success = true;
+
+        } catch (err) {
+          console.error("❌ Reward SMS failed:", {
+            error: err.message,
+            code: err.code,
+            status: err.status,
+            moreInfo: err.moreInfo
+          });
+          smsResults.reward.error = err.message;
+        }
       } else {
         console.warn("⚠️ No reward template found, cannot issue reward");
       }
     } else {
-      // ✅ REMOVED: No progress SMS sent for regular check-ins
       console.log(`✅ Regular check-in (no SMS sent). Progress: ${nextRewardAt} more needed`);
     }
 
-    // ✅ OPTIMIZATION: Don't wait for SMS to complete - respond immediately
-    Promise.all(smsPromises).catch(err => console.error("SMS batch error:", err));
+    // ✅ Log SMS results summary
+    console.log("📊 SMS Results Summary:", smsResults);
 
-    // ✅ SUCCESS RESPONSE - returned immediately without waiting for SMS
+    // ✅ SUCCESS RESPONSE
     const response = {
       ok: true,
       phone: normalizedPhone,
@@ -355,7 +413,9 @@ exports.checkin = async (req, res) => {
         ? `Thanks for checking in! Only 1 more check-in to earn your reward!`
         : `Thanks for checking in! Only ${nextRewardAt} more check-ins to earn your reward!`,
       cooldownHours: cooldownHours,
-      nextCheckinAvailable: new Date(Date.now() + (cooldownHours * 60 * 60 * 1000)).toISOString()
+      nextCheckinAvailable: new Date(Date.now() + (cooldownHours * 60 * 60 * 1000)).toISOString(),
+      // ✅ Add SMS status to response for debugging
+      smsStatus: smsResults
     };
 
     console.log("✅ Check-in complete:", { 
@@ -363,7 +423,8 @@ exports.checkin = async (req, res) => {
       nextReward: nextRewardAt,
       rewardIssued: !!newReward,
       thresholdUsed: rewardThreshold,
-      smsSent: isFirstCheckin || shouldIssueReward ? 'yes' : 'no'
+      welcomeSent: smsResults.welcome.success,
+      rewardSent: smsResults.reward.success
     });
 
     res.json(response);
@@ -373,6 +434,8 @@ exports.checkin = async (req, res) => {
     res.status(500).json({ ok: false, error: "Server error" });
   }
 };
+
+// ... rest of your controller functions remain the same ...
 
 /**
  * 💬 POST /api/twilio/webhook
@@ -703,7 +766,7 @@ exports.redeemReward = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ Redeem Error:', err);
+    console .error('❌ Redeem Error:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 };

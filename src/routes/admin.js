@@ -169,12 +169,14 @@ router.post("/admin/unblock-customer", kioskController.unblockCustomer);
 router.post("/admin/block-customer", kioskController.blockCustomer);
 
 // ========================================
-// CAMPAIGN MANAGEMENT ROUTES
+// ✅ CAMPAIGN MANAGEMENT ROUTES (WITH SCHEDULING)
 // ========================================
 router.get("/campaigns", campaignController.getCampaigns);
 router.post("/campaigns", campaignController.createCampaign);
 router.get("/campaigns/:id", campaignController.getCampaignDetails);
+router.put("/campaigns/:id", campaignController.updateScheduledCampaign); // ✅ NEW: Update scheduled campaign
 router.post("/campaigns/:id/send", campaignController.sendCampaign);
+router.post("/campaigns/:id/cancel", campaignController.cancelScheduledCampaign); // ✅ NEW: Cancel scheduled campaign
 router.delete("/campaigns/:id", campaignController.deleteCampaign);
 
 // --- WIN-BACK AUTOMATION ---

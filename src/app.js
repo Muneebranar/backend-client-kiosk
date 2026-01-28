@@ -78,8 +78,6 @@
 
 // module.exports = app;
 
-
-
 require("dotenv").config();
 const express = require("express");
 const helmet = require("helmet");
@@ -156,6 +154,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // 🔹 API Routes
 app.use("/kiosk", kioskRoutes);
 app.use("/admin", adminRoutes);
+// Note: Campaign routes are in adminRoutes under /admin/campaigns
 
 // 🧩 Health check route
 app.get("/", (req, res) => {
@@ -182,6 +181,7 @@ app.get("/api/info", (req, res) => {
     endpoints: {
       kiosk: "/kiosk/*",
       admin: "/admin/*",
+      campaigns: "/admin/campaigns/*",
     },
     status: "operational",
   });

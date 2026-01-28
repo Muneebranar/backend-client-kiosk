@@ -1,5 +1,5 @@
 // ================================================================
-// controllers/campaignController.js - PRODUCTION READY VERSION
+// controllers/campaignController.js - WITH SCHEDULING SUPPORT
 // ================================================================
 const Campaign = require('../models/Campaign');
 const CampaignDelivery = require('../models/CampaignDelivery');
@@ -9,11 +9,12 @@ const Business = require('../models/Business');
 const TwilioNumber = require('../models/TwilioNumber');
 const Reward = require('../models/Reward');
 const twilio = require('twilio');
+const cron = require('node-cron'); // ✅ NEW: For scheduling
 
-// ✅ Configuration: Change this for testing vs production
-const USE_TESTING_TIMEFRAME = false; // ✅ Set to false for production (30 days)
-const TESTING_MINUTES = 2; // For testing: customers active in last 2 minutes
-const PRODUCTION_DAYS = 30; // For production: customers active in last 30 days
+// ✅ Configuration
+const USE_TESTING_TIMEFRAME = false;
+const TESTING_MINUTES = 2;
+const PRODUCTION_DAYS = 30;
 
 // ✅ Comprehensive list of Twilio error codes that mark subscriber as invalid
 const INVALID_ERROR_CODES = [
@@ -26,6 +27,99 @@ const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
+
+// ✅ NEW: Store active scheduled jobs
+const scheduledJobs = new Map();
+
+/**
+ * ✅ NEW: Initialize scheduler - checks every minute for campaigns to send
+ */
+function initializeCampaignScheduler() {
+  console.log('🕐 Initializing campaign scheduler...');
+  
+  // Run every minute
+  cron.schedule('* * * * *', async () => {
+    try {
+      await checkScheduledCampaigns();
+    } catch (error) {
+      console.error('❌ Scheduler error:', error);
+    }
+  });
+  
+  console.log('✅ Campaign scheduler initialized');
+}
+
+/**
+ * ✅ NEW: Check for campaigns that need to be sent
+ */
+async function checkScheduledCampaigns() {
+  try {
+    const now = new Date();
+    
+    // Find scheduled campaigns that are due
+    const dueCampaigns = await Campaign.find({
+      status: 'scheduled',
+      scheduledFor: { $lte: now }
+    }).populate('businessId');
+
+    if (dueCampaigns.length === 0) {
+      return;
+    }
+
+    console.log(`\n🕐 === SCHEDULED CAMPAIGNS CHECK ===`);
+    console.log(`   Time: ${now.toISOString()}`);
+    console.log(`   Found ${dueCampaigns.length} campaign(s) ready to send`);
+
+    for (const campaign of dueCampaigns) {
+      console.log(`\n📤 Processing scheduled campaign: ${campaign.name}`);
+      console.log(`   Scheduled for: ${campaign.scheduledFor.toISOString()}`);
+      console.log(`   Business: ${campaign.businessId.name}`);
+
+      try {
+        // Update status to sending
+        campaign.status = 'sending';
+        campaign.startedAt = new Date();
+        await campaign.save();
+
+        // Get eligible customers
+        const eligibleCustomers = await getAudienceCustomers(campaign);
+        
+        if (eligibleCustomers.length === 0) {
+          console.log(`   ⚠️ No eligible recipients found`);
+          campaign.status = 'completed';
+          campaign.completedAt = new Date();
+          campaign.stats.totalRecipients = 0;
+          campaign.stats.pending = 0;
+          await campaign.save();
+          continue;
+        }
+
+        // Update campaign stats
+        campaign.stats.totalRecipients = eligibleCustomers.length;
+        campaign.stats.pending = eligibleCustomers.length;
+        await campaign.save();
+
+        console.log(`   ✅ Sending to ${eligibleCustomers.length} recipients`);
+
+        // Process campaign asynchronously
+        processCampaign(campaign._id).catch(err => {
+          console.error(`   ❌ Processing error:`, err);
+        });
+
+      } catch (error) {
+        console.error(`   ❌ Failed to send scheduled campaign:`, error);
+        campaign.status = 'failed';
+        campaign.completedAt = new Date();
+        await campaign.save();
+      }
+    }
+
+    console.log(`=================================\n`);
+
+  } catch (error) {
+    console.error('❌ Error checking scheduled campaigns:', error);
+  }
+}
 
 /**
  * ✅ FIXED: Mark customer as invalid
@@ -85,16 +179,13 @@ async function getAudienceCustomers(campaign) {
   // Apply audience filter
   switch (campaign.audienceFilter) {
     case 'last_30_days':
-      // ✅ PRODUCTION READY: Use configurable timeframe
       if (USE_TESTING_TIMEFRAME) {
-        // Testing mode: 2 minutes
         const testTimeAgo = new Date();
         testTimeAgo.setMinutes(testTimeAgo.getMinutes() - TESTING_MINUTES);
         query.lastCheckinAt = { $gte: testTimeAgo };
         console.log(`⏰ Filter: Active in last ${TESTING_MINUTES} minutes (TESTING MODE)`);
         console.log(`   Cutoff time: ${testTimeAgo.toISOString()}`);
       } else {
-        // Production mode: 30 days
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - PRODUCTION_DAYS);
         query.lastCheckinAt = { $gte: thirtyDaysAgo };
@@ -102,7 +193,6 @@ async function getAudienceCustomers(campaign) {
         console.log(`   Cutoff time: ${thirtyDaysAgo.toISOString()}`);
       }
       
-      // Debug: Check how many have lastCheckinAt
       const withCheckin = await Customer.countDocuments({
         businessId: campaign.businessId._id,
         lastCheckinAt: { $exists: true, $ne: null }
@@ -114,14 +204,12 @@ async function getAudienceCustomers(campaign) {
       query.totalCheckins = { $gt: 0 };
       console.log(`🎁 Filter: Reward earners (totalCheckins > 0)`);
       
-      // Debug: Check how many have checkins
       const withCheckins = await Customer.countDocuments({
         businessId: campaign.businessId._id,
         totalCheckins: { $gt: 0 }
       });
       console.log(`   Customers with checkins > 0: ${withCheckins}`);
       
-      // Show sample customers with checkins
       const sampleWithCheckins = await Customer.find({
         businessId: campaign.businessId._id,
         totalCheckins: { $gt: 0 }
@@ -177,7 +265,6 @@ async function getAudienceCustomers(campaign) {
   } else {
     console.log(`\n⚠️ No customers found! Checking why...`);
     
-    // Debug each filter condition
     const noPhone = await Customer.countDocuments({
       businessId: campaign.businessId._id,
       deleted: { $ne: true },
@@ -220,7 +307,6 @@ async function getAudienceCustomers(campaign) {
     console.log(`      Not active status: ${notActive}`);
     console.log(`      Deleted: ${deletedCount}`);
     
-    // Show what customers actually look like
     const sampleCustomer = await Customer.findOne({
       businessId: campaign.businessId._id,
       deleted: { $ne: true }
@@ -237,22 +323,6 @@ async function getAudienceCustomers(campaign) {
         isInvalid: sampleCustomer.isInvalid,
         deleted: sampleCustomer.deleted
       }, null, 2));
-      
-      console.log(`\n💡 QUICK FIX - Run this in MongoDB:`);
-      console.log(`db.customers.updateMany(
-  { 
-    businessId: ObjectId("${campaign.businessId._id}"),
-    subscriberStatus: "active",
-    deleted: { $ne: true }
-  },
-  { 
-    $set: { 
-      marketingConsent: true,
-      marketingConsentDate: new Date(),
-      isInvalid: false
-    } 
-  }
-)`);
     }
   }
 
@@ -268,7 +338,6 @@ async function getCustomerRewards(customerId, businessId) {
   try {
     console.log(`🔍 Looking for rewards for customer: ${customerId}`);
     
-    // Method 1: By customerId
     let rewards = await Reward.find({
       customerId: customerId,
       businessId: businessId,
@@ -285,7 +354,6 @@ async function getCustomerRewards(customerId, businessId) {
       return rewards[0];
     }
 
-    // Method 2: By phone (fallback)
     const customer = await Customer.findById(customerId).select('phone').lean();
     if (customer && customer.phone) {
       rewards = await Reward.find({
@@ -314,7 +382,7 @@ async function getCustomerRewards(customerId, businessId) {
 }
 
 /**
- * CREATE CAMPAIGN
+ * ✅ IMPROVED: CREATE CAMPAIGN with scheduling support
  */
 exports.createCampaign = async (req, res) => {
   try {
@@ -375,6 +443,41 @@ exports.createCampaign = async (req, res) => {
       });
     }
 
+    // ✅ NEW: Validate scheduled date
+    let scheduleDate = null;
+    let campaignStatus = 'draft';
+
+    if (scheduledFor) {
+      scheduleDate = new Date(scheduledFor);
+      const now = new Date();
+
+      // ✅ Check if scheduled time is in the past
+      if (scheduleDate <= now) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Scheduled time must be in the future',
+          scheduledFor: scheduleDate.toISOString(),
+          currentTime: now.toISOString()
+        });
+      }
+
+      // ✅ Check if scheduled time is too far in the future (optional - 90 days max)
+      const maxScheduleDays = 90;
+      const maxScheduleDate = new Date(now.getTime() + (maxScheduleDays * 24 * 60 * 60 * 1000));
+      if (scheduleDate > maxScheduleDate) {
+        return res.status(400).json({
+          ok: false,
+          error: `Cannot schedule more than ${maxScheduleDays} days in advance`,
+          scheduledFor: scheduleDate.toISOString(),
+          maxDate: maxScheduleDate.toISOString()
+        });
+      }
+
+      campaignStatus = 'scheduled';
+      console.log(`📅 Campaign scheduled for: ${scheduleDate.toISOString()}`);
+      console.log(`   Time until send: ${Math.round((scheduleDate - now) / 60000)} minutes`);
+    }
+
     const campaign = await Campaign.create({
       businessId,
       createdBy: req.user.id,
@@ -384,19 +487,26 @@ exports.createCampaign = async (req, res) => {
       mediaUrl: type === 'mms' ? mediaUrl : null,
       audienceFilter: audienceFilter || 'all',
       customCriteria: customCriteria || {},
-      scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
+      scheduledFor: scheduleDate,
       timezone: timezone || business.timezone || 'America/New_York',
-      status: scheduledFor ? 'scheduled' : 'draft',
+      status: campaignStatus,
       winBackSettings: type === 'win-back' ? winBackSettings : undefined
     });
 
     console.log('✅ Campaign created:', campaign._id);
     console.log(`   Business: ${business.name}`);
     console.log(`   Filter: ${audienceFilter}`);
+    console.log(`   Status: ${campaignStatus}`);
+    if (scheduleDate) {
+      console.log(`   Scheduled for: ${scheduleDate.toISOString()}`);
+    }
 
     res.json({
       ok: true,
-      campaign
+      campaign,
+      message: scheduleDate 
+        ? `Campaign scheduled for ${scheduleDate.toLocaleString()}`
+        : 'Campaign created as draft'
     });
 
   } catch (error) {
@@ -404,6 +514,151 @@ exports.createCampaign = async (req, res) => {
     res.status(500).json({
       ok: false,
       error: 'Failed to create campaign',
+      message: error.message
+    });
+  }
+};
+
+/**
+ * ✅ NEW: UPDATE SCHEDULED CAMPAIGN
+ */
+exports.updateScheduledCampaign = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { scheduledFor, name, message, audienceFilter, customCriteria } = req.body;
+    const userRole = req.user.role;
+    const userBusinessId = req.user.businessId;
+
+    const campaign = await Campaign.findById(id);
+    if (!campaign) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Campaign not found'
+      });
+    }
+
+    if (userRole === 'admin' && campaign.businessId.toString() !== userBusinessId) {
+      return res.status(403).json({
+        ok: false,
+        error: 'Access denied'
+      });
+    }
+
+    // Can only update draft or scheduled campaigns
+    if (!['draft', 'scheduled'].includes(campaign.status)) {
+      return res.status(400).json({
+        ok: false,
+        error: `Cannot update campaign with status: ${campaign.status}`
+      });
+    }
+
+    // Update fields
+    if (name) campaign.name = name;
+    if (message) {
+      if (message.length > 1600) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Message exceeds 1600 character limit'
+        });
+      }
+      campaign.message = message;
+    }
+    if (audienceFilter) campaign.audienceFilter = audienceFilter;
+    if (customCriteria) campaign.customCriteria = customCriteria;
+
+    // Update schedule
+    if (scheduledFor !== undefined) {
+      if (scheduledFor === null) {
+        // Remove schedule
+        campaign.scheduledFor = null;
+        campaign.status = 'draft';
+      } else {
+        const scheduleDate = new Date(scheduledFor);
+        const now = new Date();
+
+        if (scheduleDate <= now) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Scheduled time must be in the future'
+          });
+        }
+
+        campaign.scheduledFor = scheduleDate;
+        campaign.status = 'scheduled';
+      }
+    }
+
+    await campaign.save();
+
+    console.log(`✅ Campaign updated: ${campaign._id}`);
+    if (campaign.scheduledFor) {
+      console.log(`   New schedule: ${campaign.scheduledFor.toISOString()}`);
+    }
+
+    res.json({
+      ok: true,
+      campaign,
+      message: 'Campaign updated successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Update Campaign Error:', error);
+    res.status(500).json({
+      ok: false,
+      error: 'Failed to update campaign',
+      message: error.message
+    });
+  }
+};
+
+/**
+ * ✅ NEW: CANCEL SCHEDULED CAMPAIGN
+ */
+exports.cancelScheduledCampaign = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userRole = req.user.role;
+    const userBusinessId = req.user.businessId;
+
+    const campaign = await Campaign.findById(id);
+    if (!campaign) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Campaign not found'
+      });
+    }
+
+    if (userRole === 'admin' && campaign.businessId.toString() !== userBusinessId) {
+      return res.status(403).json({
+        ok: false,
+        error: 'Access denied'
+      });
+    }
+
+    if (campaign.status !== 'scheduled') {
+      return res.status(400).json({
+        ok: false,
+        error: 'Can only cancel scheduled campaigns'
+      });
+    }
+
+    campaign.status = 'cancelled';
+    campaign.completedAt = new Date();
+    await campaign.save();
+
+    console.log(`❌ Campaign cancelled: ${campaign._id}`);
+
+    res.json({
+      ok: true,
+      message: 'Campaign cancelled successfully',
+      campaign
+    });
+
+  } catch (error) {
+    console.error('❌ Cancel Campaign Error:', error);
+    res.status(500).json({
+      ok: false,
+      error: 'Failed to cancel campaign',
       message: error.message
     });
   }
@@ -505,7 +760,7 @@ exports.getCampaignDetails = async (req, res) => {
 };
 
 /**
- * ✅ FIXED: SEND CAMPAIGN - Supports both DB and business-assigned Twilio numbers
+ * ✅ SEND CAMPAIGN - Supports immediate and scheduled sending
  */
 exports.sendCampaign = async (req, res) => {
   try {
@@ -525,6 +780,7 @@ exports.sendCampaign = async (req, res) => {
     console.log(`✅ Campaign: ${campaign.name}`);
     console.log(`   Business: ${campaign.businessId.name}`);
     console.log(`   Filter: ${campaign.audienceFilter}`);
+    console.log(`   Status: ${campaign.status}`);
 
     if (userRole === 'admin' && campaign.businessId._id.toString() !== userBusinessId) {
       return res.status(403).json({
@@ -533,20 +789,19 @@ exports.sendCampaign = async (req, res) => {
       });
     }
 
-    if (campaign.status === 'completed' || campaign.status === 'sending') {
+    if (['completed', 'sending', 'cancelled'].includes(campaign.status)) {
       return res.status(400).json({
         ok: false,
         error: `Campaign is already ${campaign.status}`
       });
     }
 
-    // ✅ Check Twilio number - support both DB numbers and default number
+    // ✅ Check Twilio number
     console.log('\n📞 Checking Twilio number...');
     const businessIdString = campaign.businessId._id.toString();
 
     let twilioPhoneNumber = null;
 
-    // Method 1: Try to find in TwilioNumber collection
     const twilioNumber = await TwilioNumber.findOne({
       assignedBusinesses: businessIdString,
       isActive: true
@@ -556,7 +811,6 @@ exports.sendCampaign = async (req, res) => {
       twilioPhoneNumber = twilioNumber.number;
       console.log(`✅ Found DB Twilio number: ${twilioPhoneNumber}`);
     } else {
-      // Method 2: Check if business has the default number assigned
       const businessDoc = await Business.findById(businessIdString).select('twilioNumber twilioNumberActive');
       
       if (businessDoc?.twilioNumber && businessDoc.twilioNumberActive) {
@@ -567,31 +821,9 @@ exports.sendCampaign = async (req, res) => {
 
     if (!twilioPhoneNumber) {
       console.log('❌ No active Twilio number found!');
-      
-      const allTwilioNumbers = await TwilioNumber.find().lean();
-      console.log(`   Total Twilio numbers in DB: ${allTwilioNumbers.length}`);
-      allTwilioNumbers.forEach(num => {
-        console.log(`      - ${num.number}: businesses=${num.assignedBusinesses?.join(', ') || 'none'}, active=${num.isActive}`);
-      });
-
-      const businessDoc = await Business.findById(businessIdString).select('twilioNumber twilioNumberActive');
-      console.log(`   Business twilioNumber: ${businessDoc?.twilioNumber || 'none'}`);
-      console.log(`   Business twilioNumberActive: ${businessDoc?.twilioNumberActive}`);
-
       return res.status(400).json({
         ok: false,
-        error: 'No active Twilio number assigned to this business.',
-        solution: `Assign a Twilio number to this business in Settings > Twilio Numbers`,
-        debug: {
-          businessId: businessIdString,
-          businessName: campaign.businessId.name,
-          businessTwilioNumber: businessDoc?.twilioNumber,
-          availableNumbers: allTwilioNumbers.map(n => ({
-            phone: n.number,
-            assignedBusinesses: n.assignedBusinesses,
-            isActive: n.isActive
-          }))
-        }
+        error: 'No active Twilio number assigned to this business.'
       });
     }
 
@@ -639,7 +871,7 @@ exports.sendCampaign = async (req, res) => {
 };
 
 /**
- * ✅ FIXED: PROCESS CAMPAIGN - Supports both DB and business-assigned Twilio numbers
+ * ✅ PROCESS CAMPAIGN
  */
 async function processCampaign(campaignId) {
   try {
@@ -654,7 +886,7 @@ async function processCampaign(campaignId) {
     console.log(`   Business: ${campaign.businessId.name}`);
     console.log(`   Recipients: ${campaign.stats.totalRecipients}`);
 
-    // ✅ Get Twilio number - support both DB and business-assigned numbers
+    // ✅ Get Twilio number
     const businessIdString = campaign.businessId._id.toString();
     let twilioPhoneNumber = null;
 
@@ -667,7 +899,6 @@ async function processCampaign(campaignId) {
       twilioPhoneNumber = twilioNumber.number;
       console.log(`   Using DB Twilio number: ${twilioPhoneNumber}`);
     } else {
-      // Check business's assigned number
       const businessDoc = await Business.findById(businessIdString).select('twilioNumber twilioNumberActive');
       if (businessDoc?.twilioNumber && businessDoc.twilioNumberActive) {
         twilioPhoneNumber = businessDoc.twilioNumber;
@@ -731,7 +962,6 @@ async function sendCampaignMessage(campaign, customer, fromNumber) {
   try {
     const reward = await getCustomerRewards(customer._id, campaign.businessId);
 
-    // Personalize message using metadata.name
     const customerName = customer.metadata?.name || '';
     let personalizedMessage = campaign.message
       .replace(/\{firstName\}/g, customerName.split(' ')[0] || '')
@@ -743,7 +973,6 @@ async function sendCampaignMessage(campaign, customer, fromNumber) {
 
     console.log(`   📤 ${customerName || customer.phone}${reward ? ' 🎁' : ''}`);
 
-    // Create delivery record
     const delivery = await CampaignDelivery.create({
       campaignId: campaign._id,
       businessId: campaign.businessId,
@@ -754,7 +983,6 @@ async function sendCampaignMessage(campaign, customer, fromNumber) {
       status: 'queued'
     });
 
-    // Send via Twilio
     const messageParams = {
       to: customer.phone,
       from: fromNumber,
@@ -767,13 +995,11 @@ async function sendCampaignMessage(campaign, customer, fromNumber) {
 
     const twilioMessage = await twilioClient.messages.create(messageParams);
 
-    // Update delivery
     delivery.messageSid = twilioMessage.sid;
     delivery.status = 'sent';
     delivery.sentAt = new Date();
     await delivery.save();
 
-    // Update stats
     campaign.stats.sent += 1;
     campaign.stats.pending -= 1;
     await campaign.save();
@@ -926,4 +1152,8 @@ exports.deleteCampaign = async (req, res) => {
   }
 };
 
-module.exports = exports;
+// ✅ Export the scheduler initialization function
+module.exports = {
+  ...exports,
+  initializeCampaignScheduler
+};
