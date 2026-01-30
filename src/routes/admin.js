@@ -34,7 +34,7 @@ console.log("  ✅ POST /api/admin/campaigns/webhook/status (public)");
 // 🔒 PROTECTED ROUTES (AFTER protect middleware)
 // ========================================
 console.log("🔒 Setting up PROTECTED routes...");
-// router.use(protect);
+router.use(protect);
 
 // ========================================
 // ✅ PROFILE ROUTE
