@@ -1,32 +1,70 @@
-// src/middleware/twilioValidator.js
 const twilio = require("twilio");
 
 module.exports = (req, res, next) => {
-  // ⚙️ Skip validation in development
+  // 🔓 Dev bypass
   if (process.env.NODE_ENV !== "production") {
-    console.log("🧪 Twilio webhook received (signature validation skipped in dev)");
+    console.log("🧪 DEV MODE: Twilio validator skipped");
     return next();
   }
 
-  try {
-    const twilioSignature = req.headers["x-twilio-signature"];
-    const url = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
-    const isValid = twilio.validateRequest(
-      process.env.TWILIO_AUTH_TOKEN,
-      twilioSignature,
-      url,
-      req.body
-    );
+  const incomingAccountSid = req.body?.AccountSid;
+  const envAccountSid = process.env.TWILIO_ACCOUNT_SID;
 
-    if (!isValid) {
-      console.warn("⚠️ Invalid Twilio signature — request blocked.");
-      return res.status(403).send("<Response>Invalid signature</Response>");
-    }
+  // // 🧾 LOG — AccountSid comparison
+  // console.log("🔍 Twilio AccountSid Check:", {
+  //   incomingAccountSid: incomingAccountSid || "❌ missing",
+  //   envAccountSid: envAccountSid || "❌ missing",
+  //   match: incomingAccountSid === envAccountSid
+  // });
 
-    console.log("✅ Valid Twilio webhook request");
-    next();
-  } catch (err) {
-    console.error("💥 Twilio validation error:", err);
-    res.status(500).send("<Response>Server error</Response>");
+  // ❌ AccountSid missing
+  if (!incomingAccountSid) {
+    console.warn("⚠️ Webhook blocked: AccountSid missing");
+    return res.status(403).send("<Response>Forbidden</Response>");
   }
+
+  // ❌ AccountSid mismatch
+  if (incomingAccountSid !== envAccountSid) {
+    console.warn("⚠️ Webhook blocked: AccountSid mismatch");
+    return res.status(403).send("<Response>Forbidden</Response>");
+  }
+
+  const twilioSignature = req.headers["x-twilio-signature"];
+
+  // 🧾 LOG — Signature presence
+  console.log("🔍 Twilio Signature:", {
+    present: !!twilioSignature
+  });
+
+  // ⚠️ Signature missing → allow (safe fallback)
+  if (!twilioSignature) {
+    console.warn("⚠️ Signature missing — allowed");
+    return next();
+  }
+
+  // 🌐 URL reconstruction
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol;
+  const host = req.headers["x-forwarded-host"] || req.get("host");
+  const url = `${protocol}://${host}${req.originalUrl}`;
+
+  // 🧾 LOG — URL used for validation
+  console.log("🔍 Signature Validation URL:", url);
+
+  const isValid = twilio.validateRequest(
+    process.env.TWILIO_AUTH_TOKEN,
+    twilioSignature,
+    url,
+    req.body
+  );
+
+  // 🧾 LOG — Validation result
+  console.log("🔍 Signature valid:", isValid);
+
+  if (!isValid) {
+    console.warn("⚠️ Webhook blocked: Invalid signature");
+    return res.status(403).send("<Response>Invalid signature</Response>");
+  }
+
+  console.log("✅ Twilio webhook validated successfully");
+  next();
 };

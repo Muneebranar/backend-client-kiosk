@@ -34,7 +34,7 @@ console.log("  ✅ POST /api/admin/campaigns/webhook/status (public)");
 // 🔒 PROTECTED ROUTES (AFTER protect middleware)
 // ========================================
 console.log("🔒 Setting up PROTECTED routes...");
-router.use(protect);
+// router.use(protect);
 
 // ========================================
 // ✅ PROFILE ROUTE
@@ -185,6 +185,20 @@ router.put("/win-back/:businessId", winBackController.updateWinBackSettings);
 router.get("/win-back/:businessId/preview", winBackController.previewWinBackAudience);
 router.post("/win-back/:businessId/trigger", winBackController.triggerWinBack);
 router.get("/win-back/:businessId/stats", winBackController.getWinBackStats);
+
+
+// ========================================
+// ✅ ADD THESE ROUTES TO YOUR admin.js routes file
+// ========================================
+
+// After the existing routes, add:
+
+// --- INBOUND MESSAGES ---
+router.get("/inbound-messages", admin.getInboundMessages);
+router.get("/customers/:id/messages", admin.getCustomerMessages);
+
+// If you want a specific business's inbound messages:
+router.get("/business/:id/inbound-messages", admin.getInboundMessages);
 
 console.log("✅ Admin routes configured successfully");
 

@@ -1,11 +1,4 @@
-// ✅ UPDATED: SMS only on first check-in and reward earned
-// Changes:
-// - Removed progress SMS after each check-in
-// - Keeps welcome SMS for first-time users
-// - Keeps reward SMS when threshold reached
-// - No SMS sent for regular check-ins
-
-// ✅ IMPROVED VERSION with better SMS debugging
+// ✅ FIXED: Proper inbound message tracking with all required fields
 
 const Business = require("../models/Business");
 const Customer = require("../models/Customer");
@@ -435,17 +428,23 @@ exports.checkin = async (req, res) => {
   }
 };
 
-// ... rest of your controller functions remain the same ...
-
 /**
  * 💬 POST /api/twilio/webhook
- * Handles incoming STOP / START / HELP / OTHER messages from Twilio.
+ * ✅ FIXED: Properly captures all inbound message data including To, MessageSid, AccountSid
  */
 exports.twilioWebhook = async (req, res) => {
   try {
-    const { From, Body, MessageSid, To } = req.body;
+    const { From, To, Body, MessageSid, AccountSid } = req.body;
     const incomingFrom = normalizePhone(From);
-    console.log("📩 Incoming Twilio message:", req.body);
+    const incomingTo = normalizePhone(To);
+    
+    console.log("📩 Incoming Twilio message:", {
+      from: incomingFrom,
+      to: incomingTo,
+      body: Body,
+      messageSid: MessageSid,
+      accountSid: AccountSid
+    });
 
     if (!From) {
       console.warn("⚠️ Webhook missing 'From' number, ignoring.");
@@ -458,19 +457,49 @@ exports.twilioWebhook = async (req, res) => {
     else if (incoming.includes("START")) eventType = "START";
     else if (incoming.includes("HELP")) eventType = "HELP";
 
-    // Find customer
-    const customer = await Customer.findOne({ phone: incomingFrom }).sort({ createdAt: -1 });
+    // ✅ Find business by Twilio number to associate inbound message
+    let business = null;
+    if (incomingTo) {
+      business = await Business.findOne({ 
+        twilioNumber: incomingTo,
+        twilioNumberActive: true 
+      });
+      
+      if (business) {
+        console.log(`✅ Found business for Twilio number ${incomingTo}:`, business.name);
+      } else {
+        console.warn(`⚠️ No business found for Twilio number: ${incomingTo}`);
+      }
+    }
 
-    // Log inbound event
+    // Find customer
+    const customer = await Customer.findOne({ 
+      phone: incomingFrom 
+    }).sort({ createdAt: -1 });
+
+    // ✅ FIXED: Create comprehensive inbound event with all required fields
     const inbound = await InboundEvent.create({
       fromNumber: incomingFrom,
+      toNumber: incomingTo, // ✅ FIXED: Now capturing the receiving Twilio number
       body: Body,
       eventType,
       customerId: customer?._id || null,
+      businessId: business?._id || null, // ✅ FIXED: Now linking to business
+      messageSid: MessageSid, // ✅ FIXED: Now capturing Twilio message ID
+      accountSid: AccountSid, // ✅ FIXED: Now capturing account ID
+      status: 'received',
       raw: req.body,
     });
 
-    console.log("✅ InboundEvent saved:", inbound._id, "Type:", eventType);
+    console.log("✅ InboundEvent saved:", {
+      id: inbound._id,
+      type: eventType,
+      from: incomingFrom,
+      to: incomingTo,
+      businessId: business?._id,
+      customerId: customer?._id,
+      messageSid: MessageSid
+    });
 
     // Update subscription status
     if (customer) {
@@ -480,6 +509,7 @@ exports.twilioWebhook = async (req, res) => {
         customer.subscriberStatus = "active";
       }
       await customer.save();
+      console.log(`✅ Customer status updated:`, customer.subscriberStatus);
     }
 
     // Respond to Twilio
@@ -766,7 +796,7 @@ exports.redeemReward = async (req, res) => {
     });
 
   } catch (err) {
-    console .error('❌ Redeem Error:', err);
+    console.error('❌ Redeem Error:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 };

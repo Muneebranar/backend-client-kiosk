@@ -60,6 +60,10 @@ exports.createMasterAdmin = async (req, res) => {
 
 
 
+
+
+
+
 /**
  * Create new user (admin or staff)
  * POST /admin/users
@@ -2867,5 +2871,144 @@ exports.getBusinessCheckins = async (req, res) => {
   }
 };
 
+
+/**
+ * ✅ NEW: Get inbound messages for a business
+ * GET /admin/inbound-messages?businessId=xxx&page=1&limit=50
+ */
+exports.getInboundMessages = async (req, res) => {
+  try {
+    const { businessId, page = 1, limit = 50, phone } = req.query;
+    
+    console.log('📨 Fetching inbound messages:', { businessId, page, limit, phone });
+
+    // Build query
+    let query = {};
+
+    // Role-based access control
+    if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
+      if (!req.user.businessId) {
+        return res.status(403).json({
+          ok: false,
+          error: 'No business assigned to your account'
+        });
+      }
+      query.businessId = req.user.businessId;
+    } else if (businessId) {
+      query.businessId = businessId;
+    }
+
+    // Filter by phone if provided
+    if (phone) {
+      const normalizedPhone = phone.replace(/\D/g, '');
+      query.fromNumber = { $regex: normalizedPhone, $options: 'i' };
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [messages, total] = await Promise.all([
+      InboundEvent.find(query)
+        .populate('businessId', 'name slug')
+        .populate('customerId', 'phone subscriberStatus totalCheckins')
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip(skip)
+        .lean(),
+      InboundEvent.countDocuments(query)
+    ]);
+
+    console.log(`✅ Found ${messages.length} inbound messages (Total: ${total})`);
+
+    res.json({
+      ok: true,
+      messages,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get Inbound Messages Error:', error);
+    res.status(500).json({
+      ok: false,
+      error: 'Failed to fetch inbound messages',
+      message: error.message
+    });
+  }
+};
+
+/**
+ * ✅ NEW: Get customer conversation history
+ * GET /admin/customers/:id/messages
+ */
+exports.getCustomerMessages = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+    
+    console.log('💬 Fetching customer messages:', { customerId: id });
+
+    const customer = await Customer.findById(id);
+    
+    if (!customer) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Customer not found'
+      });
+    }
+
+    // Access control
+    if (req.user.role !== 'master' && req.user.role !== 'superadmin') {
+      if (customer.businessId.toString() !== req.user.businessId.toString()) {
+        return res.status(403).json({
+          ok: false,
+          error: 'Access denied'
+        });
+      }
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [messages, total] = await Promise.all([
+      InboundEvent.find({ 
+        customerId: id 
+      })
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .skip(skip)
+        .lean(),
+      InboundEvent.countDocuments({ customerId: id })
+    ]);
+
+    console.log(`✅ Found ${messages.length} messages for customer (Total: ${total})`);
+
+    res.json({
+      ok: true,
+      customer: {
+        phone: customer.phone,
+        businessId: customer.businessId,
+        subscriberStatus: customer.subscriberStatus
+      },
+      messages,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get Customer Messages Error:', error);
+    res.status(500).json({
+      ok: false,
+      error: 'Failed to fetch customer messages',
+      message: error.message
+    });
+  }
+};
 
 
