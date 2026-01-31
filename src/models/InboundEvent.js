@@ -1,4 +1,3 @@
-// models/InboundEvent.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
@@ -9,35 +8,33 @@ const InboundEventSchema = new Schema({
   },
   businessId: { 
     type: Schema.Types.ObjectId, 
-    ref: "Business" 
+    ref: "Business",
+    index: true 
   },
-  
-  // ✅ Who sent the message (customer phone)
+  // ✅ NEW: Link to customer
+  customerId: {
+    type: Schema.Types.ObjectId,
+    ref: 'Customer',
+    index: true
+  },
   fromNumber: { 
     type: String, 
     required: true,
     index: true 
   },
-  
-  // ✅ Which Twilio number received it (your business number)
   toNumber: { 
     type: String, 
     required: true,
     index: true 
   },
-  
   body: String,
   eventType: { 
     type: String, 
     default: 'INBOUND_SMS' 
   },
-  
-  // Store raw Twilio webhook data for debugging
   raw: Schema.Types.Mixed,
-  
-  // Additional useful fields
-  messageSid: String, // Twilio's unique message ID
-  accountSid: String,  // Twilio account ID
+  messageSid: String,
+  accountSid: String,
   status: {
     type: String,
     enum: ['received', 'processed', 'failed'],
@@ -47,9 +44,30 @@ const InboundEventSchema = new Schema({
   timestamps: true 
 });
 
-// Index for faster queries
+// Indexes
 InboundEventSchema.index({ businessId: 1, createdAt: -1 });
+InboundEventSchema.index({ customerId: 1, createdAt: -1 });
 InboundEventSchema.index({ fromNumber: 1, createdAt: -1 });
-InboundEventSchema.index({ toNumber: 1, createdAt: -1 });
+
+// ✅ Auto-link to customer before saving
+InboundEventSchema.pre('save', async function(next) {
+  if (!this.customerId && this.fromNumber) {
+    try {
+      const Customer = mongoose.model('Customer');
+      const normalizedPhone = this.fromNumber.replace(/\D/g, '');
+      
+      const customer = await Customer.findOne({
+        phone: { $regex: normalizedPhone, $options: 'i' }
+      });
+      
+      if (customer) {
+        this.customerId = customer._id;
+      }
+    } catch (error) {
+      console.error('❌ Error auto-linking customer:', error);
+    }
+  }
+  next();
+});
 
 module.exports = mongoose.model('InboundEvent', InboundEventSchema);

@@ -1,83 +1,5 @@
-// const mongoose = require("mongoose");
-
-// const BusinessSchema = new mongoose.Schema({
-//   name: { type: String, required: true },
-//   country: String,
-//   slug: { type: String, required: true, unique: true },
-//   logo: String,
-//   twilioNumber: String,
-//   twilioNumberActive: { type: Boolean, default: true },
-
-//   // ✅ FIXED: Nested ageGate object (matching your checkin code)
-//   ageGate: {
-//     enabled: { type: Boolean, default: false },
-//     minAge: { type: Number, enum: [18, 21], default: 18 }
-//   },
-
-//   // Legacy fields (kept for backward compatibility)
-//   ageGateEnabled: { type: Boolean, default: false },
-//   ageGateMinimum: { type: Number, enum: [18, 21], default: 18 },
-
-//   rewardThreshold: { type: Number, default: 10 },
-//   rewardExpiryDays: { type: Number, default: 7 },
-//   checkinCooldownHours: { type: Number, default: 1 },
-//   maxActiveRewards: { type: Number, default: 15 },
-//   welcomeMessage: { 
-//     type: String, 
-//     default: "Welcome! You've earned your first point!" 
-//   },
-
-//   branding: {
-//     colors: {
-//       primary: { type: String, default: "#3B82F6" },
-//       secondary: { type: String, default: "#10B981" },
-//       accent: { type: String, default: "#F59E0B" },
-//     },
-//   },
-
-//   timezone: { type: String, default: "America/Chicago" },
-//   isActive: { type: Boolean, default: true },
-  
-//   createdAt: { type: Date, default: Date.now },
-//   updatedAt: { type: Date, default: Date.now },
-// });
-
-// // ✅ Update timestamp on save
-// BusinessSchema.pre('save', function(next) {
-//   this.updatedAt = Date.now();
-//   next();
-// });
-
-// // ✅ Cascade delete related data when a business is deleted
-// BusinessSchema.pre("findOneAndDelete", async function (next) {
-//   try {
-//     const doc = await this.model.findOne(this.getFilter());
-//     if (doc) {
-//       const businessId = doc._id;
-
-//       // Delete related collections
-//       await Promise.all([
-//         mongoose.model("Reward").deleteMany({ businessId }),
-//         mongoose.model("PointsLedger").deleteMany({ businessId }),
-//         mongoose.model("Checkin").deleteMany({ businessId }),
-//         mongoose.model("CheckinLog").deleteMany({ businessId }), // ✅ ADDED
-//         mongoose.model("InboundEvent").deleteMany({ businessId }),
-//         mongoose.model("Customer").deleteMany({ businessId }),
-//         mongoose.model("RewardHistory").deleteMany({ businessId }), // ✅ ADDED
-//         mongoose.model("TwilioNumber").deleteMany({ businessId }), // ✅ ADDED
-//       ]);
-
-//       console.log(`🧹 Deleted all related data for business: ${doc.name}`);
-//     }
-//   } catch (err) {
-//     console.error("❌ Error cleaning up business data:", err);
-//   }
-//   next();
-// });
-
-// module.exports = mongoose.model("Business", BusinessSchema);
 // models/Business.js
-// Add checkinCooldownHours field to allow per-business customization
+// ✅ UPDATED: Added keyword auto-reply system
 
 const mongoose = require("mongoose");
 
@@ -123,6 +45,65 @@ const businessSchema = new mongoose.Schema(
       default: "Welcome! Thanks for checking in."
     },
     
+    // ✅ NEW: Keyword Auto-Reply System
+    autoReplies: {
+      enabled: {
+        type: Boolean,
+        default: true
+      },
+      
+      // Array of keyword-response pairs
+      keywords: [{
+        keyword: {
+          type: String,
+          required: true,
+          uppercase: true, // Store keywords in uppercase for consistency
+          trim: true
+        },
+        response: {
+          type: String,
+          required: true,
+          maxlength: 1600 // SMS limit
+        },
+        matchType: {
+          type: String,
+          enum: ['exact', 'contains', 'starts_with'],
+          default: 'exact'
+        },
+        active: {
+          type: Boolean,
+          default: true
+        },
+        usageCount: {
+          type: Number,
+          default: 0
+        },
+        lastUsedAt: {
+          type: Date
+        },
+        createdAt: {
+          type: Date,
+          default: Date.now
+        },
+        updatedAt: {
+          type: Date,
+          default: Date.now
+        }
+      }],
+      
+      // Fallback message when no keyword matches
+      fallbackMessage: {
+        type: String,
+        default: "Thanks for your message! We'll get back to you soon."
+      },
+      
+      // Whether to send fallback for unmatched messages
+      sendFallback: {
+        type: Boolean,
+        default: true
+      }
+    },
+    
     // Age gate settings
     ageGate: {
       enabled: { type: Boolean, default: false },
@@ -146,7 +127,57 @@ const businessSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes
 businessSchema.index({ slug: 1 });
 businessSchema.index({ twilioNumber: 1 });
+businessSchema.index({ "autoReplies.keywords.keyword": 1 });
+
+// ✅ Method to find matching keyword
+businessSchema.methods.findMatchingKeyword = function(incomingMessage) {
+  if (!this.autoReplies?.enabled || !this.autoReplies?.keywords?.length) {
+    return null;
+  }
+
+  const message = incomingMessage.trim().toUpperCase();
+
+  // Find active keywords
+  const activeKeywords = this.autoReplies.keywords.filter(kw => kw.active);
+
+  for (const keywordConfig of activeKeywords) {
+    const keyword = keywordConfig.keyword.toUpperCase();
+
+    let isMatch = false;
+
+    switch (keywordConfig.matchType) {
+      case 'exact':
+        isMatch = message === keyword;
+        break;
+      case 'contains':
+        isMatch = message.includes(keyword);
+        break;
+      case 'starts_with':
+        isMatch = message.startsWith(keyword);
+        break;
+      default:
+        isMatch = message === keyword;
+    }
+
+    if (isMatch) {
+      return keywordConfig;
+    }
+  }
+
+  return null;
+};
+
+// ✅ Method to update keyword usage stats
+businessSchema.methods.updateKeywordUsage = async function(keywordId) {
+  const keyword = this.autoReplies.keywords.id(keywordId);
+  if (keyword) {
+    keyword.usageCount = (keyword.usageCount || 0) + 1;
+    keyword.lastUsedAt = new Date();
+    await this.save();
+  }
+};
 
 module.exports = mongoose.model("Business", businessSchema);

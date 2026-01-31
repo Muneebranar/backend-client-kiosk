@@ -1,4 +1,5 @@
-// ✅ FIXED: Proper inbound message tracking with all required fields
+// controllers/kioskController.js
+// ✅ UPDATED: Enhanced Twilio webhook with keyword auto-reply system
 
 const Business = require("../models/Business");
 const Customer = require("../models/Customer");
@@ -15,6 +16,25 @@ const normalizePhone = (num) => {
   const digits = num.toString().replace(/\D/g, "");
   if (num.trim().startsWith("+")) return `+${digits}`;
   return `+${digits}`;
+};
+
+/**
+ * ✅ NEW: Helper function to check if message is a compliance keyword
+ */
+const isComplianceKeyword = (message) => {
+  const msg = message.trim().toUpperCase();
+  return msg.includes("STOP") || msg.includes("START") || msg.includes("HELP");
+};
+
+/**
+ * ✅ NEW: Helper function to determine compliance event type
+ */
+const getComplianceEventType = (message) => {
+  const msg = message.trim().toUpperCase();
+  if (msg.includes("STOP")) return "STOP";
+  if (msg.includes("START")) return "START";
+  if (msg.includes("HELP")) return "HELP";
+  return "OTHER";
 };
 
 /**
@@ -430,7 +450,7 @@ exports.checkin = async (req, res) => {
 
 /**
  * 💬 POST /api/twilio/webhook
- * ✅ FIXED: Properly captures all inbound message data including To, MessageSid, AccountSid
+ * ✅ ENHANCED: Keyword auto-reply system with SMS compliance
  */
 exports.twilioWebhook = async (req, res) => {
   try {
@@ -451,13 +471,14 @@ exports.twilioWebhook = async (req, res) => {
       return res.type("text/xml").send("<Response></Response>");
     }
 
-    const incoming = Body ? Body.trim().toUpperCase() : "";
-    let eventType = "OTHER";
-    if (incoming.includes("STOP")) eventType = "STOP";
-    else if (incoming.includes("START")) eventType = "START";
-    else if (incoming.includes("HELP")) eventType = "HELP";
+    const incoming = Body ? Body.trim() : "";
+    const incomingUpper = incoming.toUpperCase();
+    
+    // ✅ Check if this is a compliance keyword (STOP, START, HELP)
+    const isCompliance = isComplianceKeyword(incoming);
+    const eventType = isCompliance ? getComplianceEventType(incoming) : "OTHER";
 
-    // ✅ Find business by Twilio number to associate inbound message
+    // ✅ Find business by Twilio number
     let business = null;
     if (incomingTo) {
       business = await Business.findOne({ 
@@ -477,16 +498,16 @@ exports.twilioWebhook = async (req, res) => {
       phone: incomingFrom 
     }).sort({ createdAt: -1 });
 
-    // ✅ FIXED: Create comprehensive inbound event with all required fields
+    // ✅ Create comprehensive inbound event
     const inbound = await InboundEvent.create({
       fromNumber: incomingFrom,
-      toNumber: incomingTo, // ✅ FIXED: Now capturing the receiving Twilio number
+      toNumber: incomingTo,
       body: Body,
       eventType,
       customerId: customer?._id || null,
-      businessId: business?._id || null, // ✅ FIXED: Now linking to business
-      messageSid: MessageSid, // ✅ FIXED: Now capturing Twilio message ID
-      accountSid: AccountSid, // ✅ FIXED: Now capturing account ID
+      businessId: business?._id || null,
+      messageSid: MessageSid,
+      accountSid: AccountSid,
       status: 'received',
       raw: req.body,
     });
@@ -501,31 +522,108 @@ exports.twilioWebhook = async (req, res) => {
       messageSid: MessageSid
     });
 
-    // Update subscription status
-    if (customer) {
-      if (eventType === "STOP") {
-        customer.subscriberStatus = "unsubscribed";
-      } else if (eventType === "START") {
-        customer.subscriberStatus = "active";
+    // Initialize TwiML response
+    const twiml = new twilio.twiml.MessagingResponse();
+    let responseMessage = "";
+    let shouldRespond = true;
+
+    // ✅ PRIORITY 1: Handle SMS compliance keywords (STOP, START, HELP)
+    if (isCompliance) {
+      console.log(`🔒 Processing compliance keyword: ${eventType}`);
+      
+      if (customer) {
+        if (eventType === "STOP") {
+          customer.subscriberStatus = "unsubscribed";
+          responseMessage = "You have been unsubscribed. Reply START to rejoin.";
+        } else if (eventType === "START") {
+          customer.subscriberStatus = "active";
+          responseMessage = "You are now subscribed again. Thank you!";
+        } else if (eventType === "HELP") {
+          responseMessage = "Reply START to subscribe again or STOP to unsubscribe.";
+        }
+        
+        await customer.save();
+        console.log(`✅ Customer status updated:`, customer.subscriberStatus);
+      } else {
+        // No customer found, but still respond to compliance keywords
+        if (eventType === "STOP") {
+          responseMessage = "You have been unsubscribed.";
+        } else if (eventType === "START") {
+          responseMessage = "You are now subscribed. Thank you!";
+        } else if (eventType === "HELP") {
+          responseMessage = "Reply START to subscribe or STOP to unsubscribe.";
+        }
       }
-      await customer.save();
-      console.log(`✅ Customer status updated:`, customer.subscriberStatus);
+      
+      // Update inbound event with compliance response
+      inbound.status = 'processed';
+      await inbound.save();
+    } 
+    // ✅ PRIORITY 2: Check for custom keyword auto-replies
+    else if (business && business.autoReplies?.enabled) {
+      console.log(`🔍 Checking for keyword match in business: ${business.name}`);
+      
+      const matchedKeyword = business.findMatchingKeyword(incoming);
+      
+      if (matchedKeyword) {
+        console.log(`✅ Keyword matched:`, {
+          keyword: matchedKeyword.keyword,
+          matchType: matchedKeyword.matchType,
+          response: matchedKeyword.response.substring(0, 50) + "..."
+        });
+        
+        responseMessage = matchedKeyword.response;
+        
+        // Update keyword usage stats
+        await business.updateKeywordUsage(matchedKeyword._id);
+        
+        // Update inbound event
+        inbound.status = 'processed';
+        inbound.eventType = 'KEYWORD_MATCH';
+        inbound.metadata = {
+          keywordId: matchedKeyword._id,
+          keyword: matchedKeyword.keyword,
+          matchType: matchedKeyword.matchType
+        };
+        await inbound.save();
+        
+        console.log(`📊 Keyword usage updated. Total uses: ${matchedKeyword.usageCount + 1}`);
+      } 
+      // ✅ PRIORITY 3: Send fallback message if enabled
+      else if (business.autoReplies.sendFallback) {
+        console.log(`📝 No keyword match, using fallback message`);
+        responseMessage = business.autoReplies.fallbackMessage || 
+                         "Thanks for your message! We'll get back to you soon.";
+        
+        inbound.status = 'processed';
+        inbound.eventType = 'FALLBACK';
+        await inbound.save();
+      } else {
+        console.log(`🔕 Fallback disabled, no response sent`);
+        shouldRespond = false;
+        
+        inbound.status = 'processed';
+        inbound.eventType = 'NO_RESPONSE';
+        await inbound.save();
+      }
+    }
+    // ✅ PRIORITY 4: Default fallback if no business found
+    else {
+      console.log(`📝 No business found or auto-replies disabled, using default message`);
+      responseMessage = "Thanks for your message! We'll get back to you soon.";
+      
+      inbound.status = 'processed';
+      await inbound.save();
     }
 
-    // Respond to Twilio
-    const twiml = new twilio.twiml.MessagingResponse();
-
-    if (eventType === "STOP") {
-      twiml.message("You have been unsubscribed. Reply START to rejoin.");
-    } else if (eventType === "START") {
-      twiml.message("You are now subscribed again. Thank you!");
-    } else if (eventType === "HELP") {
-      twiml.message("Reply START to subscribe again or STOP to unsubscribe.");
-    } else {
-      twiml.message("Thanks for your message! We'll get back to you soon.");
+    // ✅ Send TwiML response
+    if (shouldRespond && responseMessage) {
+      twiml.message(responseMessage);
+      console.log(`📤 Sending response: ${responseMessage.substring(0, 50)}...`);
     }
 
     res.type("text/xml").send(twiml.toString());
+    
   } catch (err) {
     console.error("💥 Webhook error:", err);
     res.status(500).send("<Response></Response>");
