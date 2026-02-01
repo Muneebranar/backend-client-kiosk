@@ -372,16 +372,19 @@ router.delete("/keywords/:businessId/:keywordId", async (req, res) => {
       return res.status(404).json({ ok: false, error: "Business not found" });
     }
 
-    const keywordDoc = business.autoReplies.keywords.id(keywordId);
-    if (!keywordDoc) {
+    // Find keyword index in the array
+    const keywordIndex = business.autoReplies.keywords.findIndex(k => k._id.toString() === keywordId);
+    if (keywordIndex === -1) {
       return res.status(404).json({ ok: false, error: "Keyword not found" });
     }
 
-    const keywordText = keywordDoc.keyword;
-    keywordDoc.remove();
+    const deletedKeyword = business.autoReplies.keywords[keywordIndex].keyword;
+
+    // Remove keyword from array
+    business.autoReplies.keywords.splice(keywordIndex, 1);
     await business.save();
 
-    console.log(`✅ Keyword deleted: ${keywordText} for business: ${business.name}`);
+    console.log(`✅ Keyword deleted: ${deletedKeyword} for business: ${business.name}`);
 
     res.json({
       ok: true,
@@ -392,6 +395,7 @@ router.delete("/keywords/:businessId/:keywordId", async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
 
 // Update auto-reply settings
 router.put("/keywords/:businessId/settings", async (req, res) => {
