@@ -448,9 +448,11 @@ exports.checkin = async (req, res) => {
   }
 };
 
+// ✅ ENHANCED: Dynamic expiration date formatting in keyword responses
+
 /**
  * 💬 POST /api/twilio/webhook
- * ✅ ENHANCED: Keyword auto-reply system with SMS compliance
+ * ✅ ENHANCED: Keyword auto-reply system with dynamic expiration dates
  */
 exports.twilioWebhook = async (req, res) => {
   try {
@@ -569,10 +571,15 @@ exports.twilioWebhook = async (req, res) => {
         console.log(`✅ Keyword matched:`, {
           keyword: matchedKeyword.keyword,
           matchType: matchedKeyword.matchType,
+          hasExpiration: matchedKeyword.hasExpiration,
+          expirationDays: matchedKeyword.expirationDays,
           response: matchedKeyword.response.substring(0, 50) + "..."
         });
         
-        responseMessage = matchedKeyword.response;
+        // ✅ NEW: Format response with dynamic expiration date
+        responseMessage = business.formatKeywordResponse(matchedKeyword);
+        
+        console.log(`📝 Formatted response: ${responseMessage.substring(0, 100)}...`);
         
         // Update keyword usage stats
         await business.updateKeywordUsage(matchedKeyword._id);
@@ -583,7 +590,9 @@ exports.twilioWebhook = async (req, res) => {
         inbound.metadata = {
           keywordId: matchedKeyword._id,
           keyword: matchedKeyword.keyword,
-          matchType: matchedKeyword.matchType
+          matchType: matchedKeyword.matchType,
+          hasExpiration: matchedKeyword.hasExpiration,
+          expirationDays: matchedKeyword.expirationDays
         };
         await inbound.save();
         
@@ -619,7 +628,7 @@ exports.twilioWebhook = async (req, res) => {
     // ✅ Send TwiML response
     if (shouldRespond && responseMessage) {
       twiml.message(responseMessage);
-      console.log(`📤 Sending response: ${responseMessage.substring(0, 50)}...`);
+      console.log(`📤 Sending response: ${responseMessage.substring(0, 100)}...`);
     }
 
     res.type("text/xml").send(twiml.toString());
