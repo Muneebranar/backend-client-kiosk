@@ -1,5 +1,5 @@
 // models/Business.js
-// ✅ UPDATED: Added keyword auto-reply system
+// ✅ UPDATED: Added keyword auto-reply system with formatKeywordResponse method
 
 const mongoose = require("mongoose");
 
@@ -73,6 +73,16 @@ const businessSchema = new mongoose.Schema(
         active: {
           type: Boolean,
           default: true
+        },
+        // ✅ NEW: Expiration date support
+        hasExpiration: {
+          type: Boolean,
+          default: false
+        },
+        expirationDays: {
+          type: Number,
+          min: 1,
+          max: 365
         },
         usageCount: {
           type: Number,
@@ -168,6 +178,30 @@ businessSchema.methods.findMatchingKeyword = function(incomingMessage) {
   }
 
   return null;
+};
+
+// ✅ NEW: Method to format keyword response with dynamic expiration dates
+businessSchema.methods.formatKeywordResponse = function(keywordConfig) {
+  let response = keywordConfig.response;
+  
+  // Check if response contains expiration date placeholders
+  if (keywordConfig.hasExpiration && keywordConfig.expirationDays) {
+    const expirationDate = new Date();
+    expirationDate.setDate(expirationDate.getDate() + keywordConfig.expirationDays);
+    
+    // Format date as "MM/DD/YYYY"
+    const formattedDate = expirationDate.toLocaleDateString('en-US', {
+      month: '2-digit',
+      day: '2-digit',
+      year: 'numeric'
+    });
+    
+    // Replace placeholder with actual date
+    // Supports both {EXPIRATION_DATE} and {{EXPIRATION_DATE}}
+    response = response.replace(/\{\{?EXPIRATION_DATE\}?\}/g, formattedDate);
+  }
+  
+  return response;
 };
 
 // ✅ Method to update keyword usage stats
