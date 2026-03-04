@@ -142,35 +142,39 @@ businessSchema.index({ slug: 1 });
 businessSchema.index({ twilioNumber: 1 });
 businessSchema.index({ "autoReplies.keywords.keyword": 1 });
 
-// ✅ Method to find matching keyword
-businessSchema.methods.findMatchingKeyword = function(incomingMessage) {
+businessSchema.methods.findMatchingKeyword = function (incomingMessage) {
   if (!this.autoReplies?.enabled || !this.autoReplies?.keywords?.length) {
+    console.log("🔕 Auto-replies disabled or no keywords configured");
     return null;
   }
 
   const message = incomingMessage.trim().toUpperCase();
+  console.log(`🔍 Matching against message: "${message}"`);
 
-  // Find active keywords
-  const activeKeywords = this.autoReplies.keywords.filter(kw => kw.active);
+  const activeKeywords = this.autoReplies.keywords.filter((kw) => kw.active);
+  console.log(`📋 ${activeKeywords.length} active keyword(s) to check`);
 
   for (const keywordConfig of activeKeywords) {
-    const keyword = keywordConfig.keyword.toUpperCase();
+    // ✅ Defensively uppercase — schema setter not guaranteed on read
+    const keyword = (keywordConfig.keyword || "").trim().toUpperCase();
 
     let isMatch = false;
 
     switch (keywordConfig.matchType) {
-      case 'exact':
+      case "exact":
         isMatch = message === keyword;
         break;
-      case 'contains':
+      case "contains":
         isMatch = message.includes(keyword);
         break;
-      case 'starts_with':
+      case "starts_with":
         isMatch = message.startsWith(keyword);
         break;
       default:
         isMatch = message === keyword;
     }
+
+    console.log(`  Checking "${keyword}" (${keywordConfig.matchType}): ${isMatch ? "✅ MATCH" : "❌ no match"}`);
 
     if (isMatch) {
       return keywordConfig;

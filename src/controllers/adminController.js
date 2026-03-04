@@ -313,8 +313,8 @@ exports.login = async (req, res) => {
       return res.status(400).json({ ok: false, error: "Email and password required" });
     }
 
-    const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL || "darronwilliams@verizon.net";
-    const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || "EngageDFW@#";
+    const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL ;
+    const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD ;
     const JWT_SECRET = process.env.JWT_SECRET || "muneeb";
 
     // ✅ CASE 1: Default admin (master)
