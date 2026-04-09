@@ -1992,29 +1992,107 @@ exports.handleInboundTwilio = async (req, res) => {
       console.log("  - Update Details:", updateMessage);
     }
 
-    // ============================================================
-    // STEP 7: Send Twilio response
-    // ============================================================
-    const twiml = new twilio.twiml.MessagingResponse();
+  // ============================================================
+// STEP 7: Send Twilio response
+// ============================================================
 
-    if (eventType === "STOP") {
-      twiml.message("You have been unsubscribed. Reply START to rejoin.");
-      console.log("\n📤 Sending: STOP confirmation");
-    } else if (eventType === "START") {
-      twiml.message("Welcome back! You are now subscribed again. Your points have been reset.");
-      console.log("\n📤 Sending: START confirmation");
-    } else if (eventType === "HELP") {
-      twiml.message("Reply START to subscribe or STOP to unsubscribe.");
-      console.log("\n📤 Sending: HELP message");
-    } else {
-      console.log("\n📤 Sending: Empty response (no auto-reply)");
+const twiml = new twilio.twiml.MessagingResponse();
+let responseSent = false;
+
+// ------------------------------------------------------------
+// SYSTEM COMMANDS
+// ------------------------------------------------------------
+if (eventType === "STOP") {
+  twiml.message("You have been unsubscribed. Reply START to rejoin.");
+  responseSent = true;
+  console.log("\n📤 Sending: STOP confirmation");
+}
+
+else if (eventType === "START") {
+  twiml.message("Welcome back! You are now subscribed again. Your points have been reset.");
+  responseSent = true;
+  console.log("\n📤 Sending: START confirmation");
+}
+
+else if (eventType === "HELP") {
+  twiml.message("Reply START to subscribe or STOP to unsubscribe.");
+  responseSent = true;
+  console.log("\n📤 Sending: HELP message");
+}
+
+// ------------------------------------------------------------
+// KEYWORD AUTO REPLY
+// ------------------------------------------------------------
+if (!responseSent && businessId) {
+
+  console.log("\n🔍 Checking keyword auto-replies...");
+
+  const business = await Business.findById(businessId);
+
+  if (business?.autoReplies?.enabled && business.autoReplies?.keywords?.length) {
+
+    const messageText = bodyText;
+
+    const keywordMatch = business.autoReplies.keywords.find(k => {
+
+      if (!k.active) return false;
+
+      if (k.matchType === "contains") {
+        return messageText.includes(k.keyword.toUpperCase());
+      }
+
+      return messageText === k.keyword.toUpperCase();
+    });
+
+    if (keywordMatch) {
+
+      twiml.message(keywordMatch.response);
+
+      keywordMatch.usageCount = (keywordMatch.usageCount || 0) + 1;
+      keywordMatch.lastUsedAt = new Date();
+
+      await business.save();
+
+      responseSent = true;
+
+      console.log("✅ Keyword matched:", keywordMatch.keyword);
+      console.log("📤 Sending keyword response:", keywordMatch.response);
     }
+  }
+}
 
-    console.log("=".repeat(60));
-    console.log("✅ WEBHOOK COMPLETE");
-    console.log("=".repeat(60) + "\n");
+// ------------------------------------------------------------
+// FALLBACK MESSAGE
+// ------------------------------------------------------------
+if (!responseSent && businessId) {
 
-    res.status(200).type('text/xml').send(twiml.toString());
+  const business = await Business.findById(businessId);
+
+  if (business?.autoReplies?.sendFallback) {
+
+    twiml.message(
+      business.autoReplies.fallbackMessage || 
+      "Thanks for your message! We'll get back to you soon."
+    );
+
+    responseSent = true;
+
+    console.log("📤 Sending fallback message");
+  }
+}
+
+// ------------------------------------------------------------
+// NO RESPONSE
+// ------------------------------------------------------------
+if (!responseSent) {
+  console.log("\n📤 Sending: Empty response (no match)");
+}
+
+console.log("=".repeat(60));
+console.log("✅ WEBHOOK COMPLETE");
+console.log("=".repeat(60) + "\n");
+
+res.status(200).type('text/xml').send(twiml.toString());
     
   } catch (err) {
     console.error("\n" + "=".repeat(60));

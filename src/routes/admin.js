@@ -12,23 +12,23 @@ const { upload, uploadCSV } = require("../config/mutler");
 const debugAuth = require('../middleware/authDebug');
 
 // Debug Logs
-console.log("✅ adminController:", Object.keys(admin));
-console.log("✅ customerController:", Object.keys(customerController));
-console.log("✅ rewardController:", Object.keys(rewardController));
-console.log("✅ csvImportController:", Object.keys(csvImportController));
+// console.log("✅ adminController:", Object.keys(admin));
+// console.log("✅ customerController:", Object.keys(customerController));
+// console.log("✅ rewardController:", Object.keys(rewardController));
+// console.log("✅ csvImportController:", Object.keys(csvImportController));
 
 // ========================================
 // ✅ PUBLIC ROUTES (BEFORE protect middleware)
 // ========================================
-console.log("🔓 Setting up PUBLIC routes...");
+// console.log("🔓 Setting up PUBLIC routes...");
 
 // Login endpoint - MUST be public
 router.post("/login", admin.login);
-console.log("  ✅ POST /admin/login (public)");
+// console.log("  ✅ POST /admin/login (public)");
 
 // Campaign webhook - MUST be public for Twilio
 router.post("/campaigns/webhook/status", campaignController.handleDeliveryStatus);
-console.log("  ✅ POST /admin/campaigns/webhook/status (public)");
+// console.log("  ✅ POST /admin/campaigns/webhook/status (public)");
 
 // ========================================
 // 🔒 PROTECTED ROUTES (AFTER protect middleware)
@@ -41,7 +41,7 @@ router.use(protect);
 // ========================================
 router.get("/profile", async (req, res) => {
   try {
-    console.log('📋 Fetching profile for user:', req.user.id);
+    // console.log('📋 Fetching profile for user:', req.user.id);
     
     res.json({
       ok: true,

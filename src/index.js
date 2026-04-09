@@ -12,10 +12,10 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
     console.log('✅ Connected to MongoDB');
     
     // ✅ NEW: Initialize campaign scheduler after DB connection
-    console.log('🕐 Initializing campaign scheduler...');
+    // console.log('🕐 Initializing campaign scheduler...');
     try {
       campaignController.initializeCampaignScheduler();
-      console.log('✅ Campaign scheduler started');
+      // console.log('✅ Campaign scheduler started');
     } catch (error) {
       console.error('❌ Failed to initialize campaign scheduler:', error);
     }

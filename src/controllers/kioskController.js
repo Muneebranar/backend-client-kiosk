@@ -974,58 +974,38 @@ const getComplianceEventType = (message) => {
  * ✅ Inline keyword matcher — does NOT depend on Mongoose instance methods.
  * Immune to .lean() stripping, method hydration issues, or schema loading order.
  */
+const sanitize = (str) =>
+  (str || "")
+    .replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF\u00A0]/g, "") // control + zero-width + NBSP
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
 const findMatchingKeyword = (business, message) => {
-  if (!business?.autoReplies?.enabled) {
-    console.log("🔕 Auto-replies disabled for business");
-    return null;
-  }
-
+  if (!business?.autoReplies?.enabled) return null;
   const keywords = business.autoReplies?.keywords;
-  if (!keywords?.length) {
-    console.log("🔕 No keywords configured");
-    return null;
-  }
+  if (!keywords?.length) return null;
 
-  // ✅ Strip ALL whitespace and non-printable chars, then uppercase
-  const msg = message.replace(/\s+/g, " ").trim().toUpperCase();
-  console.log(`🔠 Normalized incoming for matching: "${msg}"`);
+  const msg = sanitize(message);
+  console.log(`🔠 Sanitized incoming: "${msg}" (len=${msg.length})`);
 
   for (const kw of keywords) {
-    if (!kw.active) {
-      console.log(`  ⏭ Skipping inactive keyword: "${kw.keyword}"`);
-      continue;
-    }
+    if (!kw.active) continue;
 
-    // ✅ Strip hidden chars from stored keyword too (defensive)
-    const storedKeyword = (kw.keyword || "")
-      .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width chars
-      .replace(/\s+/g, " ")
-      .trim()
-      .toUpperCase();
+    const storedKeyword = sanitize(kw.keyword);
+    console.log(`  DB keyword: "${storedKeyword}" (len=${storedKeyword.length}) matchType=${kw.matchType}`);
 
     let isMatch = false;
-
     switch (kw.matchType) {
-      case "exact":
-        isMatch = msg === storedKeyword;
-        break;
-      case "contains":
-        isMatch = msg.includes(storedKeyword);
-        break;
-      case "starts_with":
-        isMatch = msg.startsWith(storedKeyword);
-        break;
-      default:
-        isMatch = msg === storedKeyword;
+      case "exact":       isMatch = msg === storedKeyword; break;
+      case "contains":    isMatch = msg.includes(storedKeyword); break;
+      case "starts_with": isMatch = msg.startsWith(storedKeyword); break;
+      default:            isMatch = msg === storedKeyword;
     }
 
-    console.log(
-      `  Checking "${storedKeyword}" (${kw.matchType}) vs "${msg}": ${isMatch ? "✅ MATCH" : "❌ no match"}`
-    );
-
+    console.log(`  "${storedKeyword}" vs "${msg}" → ${isMatch ? "✅ MATCH" : "❌"}`);
     if (isMatch) return kw;
   }
-
   return null;
 };
 
@@ -1389,18 +1369,42 @@ exports.twilioWebhook = async (req, res) => {
     console.log(`🔍 Compliance check: "${incoming.toUpperCase()}" → isCompliance=${isCompliance}`);
 
     // Find business by the Twilio number that received the message
-    let business = null;
-    if (incomingTo) {
-      business = await Business.findOne({
-        twilioNumber: incomingTo,
-        twilioNumberActive: true,
-      });
-      console.log(
-        business
-          ? `✅ Business found: ${business.name}`
-          : `⚠️ No business found for number: ${incomingTo}`
-      );
-    }
+  // Replace the existing business lookup block with this:
+let business = null;
+if (incomingTo) {
+  // Try exact match first
+  business = await Business.findOne({
+    twilioNumber: incomingTo,
+    twilioNumberActive: true,
+  });
+
+  // Fallback: strip formatting and try digits-only comparison
+  if (!business) {
+    const digitsOnly = incomingTo.replace(/\D/g, "");
+    business = await Business.findOne({
+      twilioNumberActive: true,
+      $or: [
+        { twilioNumber: digitsOnly },
+        { twilioNumber: `+${digitsOnly}` },
+        { twilioNumber: incomingTo },
+      ],
+    });
+  }
+  // 👇 ADD IT HERE — after all business lookup attempts
+console.log("🔎 DIAGNOSTIC:", {
+  incomingTo,
+  businessFound: !!business,
+  businessTwilioNumber: business?.twilioNumber,
+  autoRepliesEnabled: business?.autoReplies?.enabled,
+  keywordCount: business?.autoReplies?.keywords?.length ?? 0,
+});
+
+  console.log(
+    business
+      ? `✅ Business found: ${business.name} (${business.twilioNumber})`
+      : `❌ No business found for To: "${incomingTo}" — check twilioNumber format in DB`
+  );
+}
 
     // Scope customer to this business
     let customer = null;
